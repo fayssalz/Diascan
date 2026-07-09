@@ -1,0 +1,690 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+:root {
+  --bg-primary: #0a0a14;
+  --bg-secondary: #0f0f20;
+  --bg-panel: rgba(18, 18, 36, 0.8);
+  --bg-input: #1a1a36;
+  --border: rgba(255, 255, 255, 0.08);
+  --text-primary: #e2e2f0;
+  --text-secondary: #9aa0c0;
+  --text-muted: #5e6488;
+  --accent: #ff477e;
+  --accent-hover: #ff7096;
+  --accent-dim: rgba(255, 71, 126, 0.15);
+  --green: #00f59b;
+  --yellow: #ffd000;
+  --red: #ff4a4a;
+  --blue: #3b82f6;
+  --font-mono: 'Consolas', 'Fira Code', 'Courier New', monospace;
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --radius: 10px;
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --backdrop: blur(16px);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* ============================================================
+   Main Layout — Three-column
+   ============================================================ */
+
+#app {
+  display: grid;
+  grid-template-columns: 260px 1fr 280px;
+  grid-template-rows: 1fr 32px;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Left Sidebar */
+#sidebar-left {
+  grid-column: 1;
+  grid-row: 1;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Center Viewport */
+#viewport {
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+#viewport canvas {
+  display: block;
+}
+
+/* Right Properties Panel */
+#sidebar-right {
+  grid-column: 3;
+  grid-row: 1;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Status Bar */
+#statusbar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  gap: 16px;
+}
+
+#statusbar .status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#statusbar .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+/* ============================================================
+   Panel Sections
+   ============================================================ */
+
+.panel-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-section:last-child {
+  border-bottom: none;
+}
+
+.panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-title::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 12px;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* ============================================================
+   Shape Selector Buttons
+   ============================================================ */
+
+.shape-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.shape-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-size: 11px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.shape-btn:hover {
+  border-color: var(--accent-dim);
+  color: var(--text-primary);
+  background: #222248;
+}
+
+.shape-btn.active {
+  border-color: var(--accent);
+  color: #fff;
+  background: var(--accent-dim);
+  box-shadow: 0 0 12px var(--accent-dim);
+}
+
+.shape-btn .shape-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* ============================================================
+   Parameter Controls (Sliders + Inputs)
+   ============================================================ */
+
+.param-group {
+  margin-bottom: 12px;
+}
+
+.param-group:last-child {
+  margin-bottom: 0;
+}
+
+.param-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.param-label .param-name {
+  font-weight: 500;
+}
+
+.param-label .param-value {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.param-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.param-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 6px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.param-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: 2px solid var(--bg-panel);
+  box-shadow: 0 0 6px var(--accent-dim);
+  transition: all var(--transition);
+}
+
+.param-slider::-webkit-slider-thumb:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 0 12px var(--accent-dim);
+}
+
+.param-input {
+  width: 56px;
+  padding: 4px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: center;
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.param-input:focus {
+  border-color: var(--accent);
+}
+
+.param-input::-webkit-inner-spin-button,
+.param-input::-webkit-outer-spin-button {
+  opacity: 1;
+}
+
+/* ============================================================
+   Toggle / Checkbox
+   ============================================================ */
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.toggle-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-input);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  transition: all var(--transition);
+}
+
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: all var(--transition);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+
+.btn:hover {
+  border-color: var(--accent-dim);
+  background: #222248;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 11px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.btn-group {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-group .btn {
+  border-radius: 0;
+}
+
+.btn-group .btn:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.btn-group .btn:last-child {
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* ============================================================
+   Faceted Shape Library (Left Sidebar)
+   ============================================================ */
+
+.faceted-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.faceted-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+  font-size: 12px;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+}
+
+.faceted-item:hover {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.faceted-item.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.faceted-item .faceted-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--bg-input);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.faceted-item .faceted-name {
+  flex: 1;
+}
+
+.faceted-item .faceted-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Measurements Display
+   ============================================================ */
+
+.measurement-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.measurement-card {
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.measurement-card .meas-value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.measurement-card .meas-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+}
+
+.utilization-bar {
+  margin-top: 8px;
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.utilization-bar .util-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease, background 0.3s ease;
+}
+
+.utilization-bar .util-fill.high {
+  background: var(--green);
+}
+
+.utilization-bar .util-fill.medium {
+  background: var(--yellow);
+}
+
+.utilization-bar .util-fill.low {
+  background: var(--red);
+}
+
+/* ============================================================
+   Viewport Overlay Elements
+   ============================================================ */
+
+#viewport-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+#viewport-overlay > * {
+  pointer-events: auto;
+}
+
+.viewport-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: rgba(13, 13, 26, 0.85);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text-secondary);
+  backdrop-filter: blur(8px);
+}
+
+.viewport-badge .badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.viewport-badge .badge-dot.rough {
+  background: var(--accent);
+}
+
+.viewport-badge .badge-dot.faceted {
+  background: var(--blue);
+}
+
+/* ============================================================
+   Drop Zone for Model Files
+   ============================================================ */
+
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  transition: all var(--transition);
+  cursor: pointer;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* ============================================================
+   Scrollbar Styling
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ============================================================
+   Animations & Premium Effects
+   ============================================================ */
+
+@keyframes pulse-glow {
+  0% { box-shadow: 0 0 5px rgba(255, 71, 126, 0.2); }
+  50% { box-shadow: 0 0 15px rgba(255, 71, 126, 0.6); }
+  100% { box-shadow: 0 0 5px rgba(255, 71, 126, 0.2); }
+}
+
+.measurement-card {
+  transition: all var(--transition);
+  border: 1px solid transparent;
+}
+
+.measurement-card:hover {
+  border-color: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.measurement-card.active {
+  animation: pulse-glow 2s infinite;
+  border-color: var(--accent);
+}
+
+/* Glassmorphism sidebar */
+#sidebar-left, #sidebar-right {
+  backdrop-filter: var(--backdrop);
+  -webkit-backdrop-filter: var(--backdrop);
+  background: var(--bg-panel);
+}
+
+/* ============================================================
+   Responsive — Collapse sidebars on small screens
+   ============================================================ */
+
+@media (max-width: 900px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto 32px;
+  }
+
+  #sidebar-left {
+    grid-column: 1;
+    grid-row: 1;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-height: 120px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  #viewport {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  #sidebar-right {
+    grid-column: 1;
+    grid-row: 3;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-height: 140px;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  #statusbar {
+    grid-column: 1;
+    grid-row: 4;
+  }
+}

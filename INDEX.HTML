@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diamond CAD — WebGL Rough Diamond Visualizer & Editor</title>
+  <link rel="stylesheet" href="css/style.css">
+  
+  <!-- Three.js CDN Import Map -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+      "three-mesh-bvh": "https://unpkg.com/three-mesh-bvh@0.7.0/build/index.module.js",
+      "three-bvh-csg": "https://unpkg.com/three-bvh-csg@0.0.16/build/index.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <!-- Left Sidebar -->
+    <div id="sidebar-left">
+      <!-- Shape Selector -->
+      <div class="panel-section">
+        <div class="panel-title">Rough Shapes</div>
+        <div class="shape-selector">
+          <div class="shape-btn active" data-shape="octahedron">
+            <div class="shape-icon">🔺</div>
+            <div>Octahedron</div>
+          </div>
+          <div class="shape-btn" data-shape="dodecahedron">
+            <div class="shape-icon">🔷</div>
+            <div>Dodecahedron</div>
+          </div>
+          <div class="shape-btn" data-shape="macle">
+            <div class="shape-icon">💎</div>
+            <div>Macle</div>
+          </div>
+          <div class="shape-btn" data-shape="makeable">
+            <div class="shape-icon">⚙️</div>
+            <div>Makeable</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Faceted Shape Library -->
+      <div class="panel-section">
+        <div class="panel-title">Faceted Shapes</div>
+        <div id="faceted-library-list" class="faceted-list">
+          <!-- Preloaded .gem shapes will be inserted dynamically here -->
+        </div>
+        <div class="drop-zone" id="faceted-drop-zone" style="margin-top: 12px;">
+          Drop .obj, .gem, or .glb here
+        </div>
+      </div>
+    </div>
+
+    <!-- Center Viewport -->
+    <div id="viewport">
+      <div id="viewport-overlay">
+        <div class="viewport-badge">
+          <div class="badge-dot rough"></div>
+          <span id="overlay-rough-type">Octahedron</span>
+        </div>
+        <div class="viewport-badge">
+          <div class="badge-dot faceted"></div>
+          <span id="overlay-faceted-type">None</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Properties Panel -->
+    <div id="sidebar-right">
+      <!-- Rough Parameters -->
+      <div class="panel-section">
+        <div class="panel-title">Rough Parameters</div>
+        
+        <div class="param-group">
+          <div class="param-label">
+            <span class="param-name">Height</span>
+            <span class="param-value" id="height-value">6.00</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-height-slider" class="param-slider" min="2" max="20" step="0.01" value="6">
+            <input type="number" id="param-height-input" class="param-input" min="2" max="20" step="0.01" value="6">
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-label">
+            <span class="param-name">length</span>
+            <span class="param-value" id="length-value">5.00</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-length-slider" class="param-slider" min="2" max="20" step="0.01" value="5">
+            <input type="number" id="param-length-input" class="param-input" min="2" max="20" step="0.01" value="5">
+          </div>
+        </div>
+        
+        <div class="param-group">
+          <div class="param-label">
+            <span class="param-name">Width</span>
+            <span class="param-value" id="width-value">5.00</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-width-slider" class="param-slider" min="2" max="20" step="0.01" value="5">
+            <input type="number" id="param-width-input" class="param-input" min="2" max="20" step="0.01" value="5">
+          </div>
+        </div>
+
+        <div class="param-group">
+          <div class="param-label">
+            <span class="param-name">Aspect Ratio</span>
+            <span class="param-value" id="aspectRatio-value">1.20</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-aspectRatio-slider" class="param-slider" min="0.5" max="3" step="0.01" value="1.2">
+            <input type="number" id="param-aspectRatio-input" class="param-input" min="0.5" max="3" step="0.01" value="1.2">
+          </div>
+        </div>
+
+        <div class="param-group" id="param-girdle">
+          <div class="param-label">
+            <span class="param-name">Girdle Thickness</span>
+            <span class="param-value" id="girdleThickness-value">0.30</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-girdleThickness-slider" class="param-slider" min="0" max="1" step="0.01" value="0.3">
+            <input type="number" id="param-girdleThickness-input" class="param-input" min="0" max="1" step="0.01" value="0.3">
+          </div>
+        </div>
+
+        <div class="param-group" id="param-twist" style="display: none;">
+          <div class="param-label">
+            <span class="param-name">Twist Angle</span>
+            <span class="param-value" id="twistAngle-value">0.00</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-twistAngle-slider" class="param-slider" min="-45" max="45" step="1" value="0">
+            <input type="number" id="param-twistAngle-input" class="param-input" min="-45" max="45" step="1" value="0">
+          </div>
+        </div>
+
+        <div class="param-group" id="param-scan-rough" style="display: none; margin-top: 15px;">
+          <button class="btn btn-primary btn-block" id="btn-scan-rough" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: bold; background: linear-gradient(135deg, #4c9faf 0%, #2e6b7d 100%); border: none;">
+            <span>📷</span> Scan Rough Diamond
+          </button>
+        </div>
+
+
+        <div class="toggle-row">
+          <span class="toggle-label">Lock Aspect Ratio</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="lock-aspect" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Polished Shapes -->
+      <div class="panel-section">
+        <div class="panel-title">Polished Shapes</div>
+        <div id="placed-shapes-list" class="faceted-list" style="margin-bottom: 10px;">
+          <!-- Placed shapes will be dynamically inserted here -->
+        </div>
+        <div class="btn-group" style="width: 100%; margin-bottom: 10px;">
+          <button class="btn btn-primary" id="auto-fit-all" style="flex: 1;">Auto-Fit All</button>
+          <button class="btn" id="manual-mode" style="flex: 1;">Manual Mode</button>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Avoid Overlap (Auto-Fit)</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="avoid-overlap-toggle" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Polished Shape Parameters -->
+      <div class="panel-section" id="polished-params-section" style="display: none;">
+        <div class="panel-title">Polished Parameters: <span id="selected-polished-name"></span></div>
+        <div id="transform-mode-toolbar" class="btn-group" style="width: 100%; margin-bottom: 15px; display: none;">
+          <button class="btn btn-primary" id="btn-mode-translate" style="flex: 1;" title="Shortcut: T">⬌ Pos</button>
+          <button class="btn" id="btn-mode-rotate" style="flex: 1;" title="Shortcut: R">⟳ Rot</button>
+          <button class="btn" id="btn-mode-scale" style="flex: 1;" title="Shortcut: S">⤢ Scl</button>
+        </div>
+        <div class="param-group">
+          <div class="param-label">
+            <span class="param-name">Scale</span>
+            <span class="param-value" id="polished-scale-value">1.00</span>
+          </div>
+          <div class="param-row">
+            <input type="range" id="param-polished-scale-slider" class="param-slider" min="0.1" max="2" step="0.01" value="1">
+            <input type="number" id="param-polished-scale-input" class="param-input" min="0.1" max="2" step="0.01" value="1">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Position X</span><span class="param-value" id="polished-posX-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-posX-slider" class="param-slider" min="-10" max="10" step="0.01" value="0">
+            <input type="number" id="param-polished-posX-input" class="param-input" min="-10" max="10" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Position Y</span><span class="param-value" id="polished-posY-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-posY-slider" class="param-slider" min="-10" max="10" step="0.01" value="0">
+            <input type="number" id="param-polished-posY-input" class="param-input" min="-10" max="10" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Position Z</span><span class="param-value" id="polished-posZ-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-posZ-slider" class="param-slider" min="-10" max="10" step="0.01" value="0">
+            <input type="number" id="param-polished-posZ-input" class="param-input" min="-10" max="10" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Rotation X</span><span class="param-value" id="polished-rotX-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-rotX-slider" class="param-slider" min="-180" max="180" step="1" value="0">
+            <input type="number" id="param-polished-rotX-input" class="param-input" min="-180" max="180" step="1" value="0">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Rotation Y</span><span class="param-value" id="polished-rotY-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-rotY-slider" class="param-slider" min="-180" max="180" step="1" value="0">
+            <input type="number" id="param-polished-rotY-input" class="param-input" min="-180" max="180" step="1" value="0">
+          </div>
+        </div>
+        <div class="param-group">
+          <div class="param-label"><span class="param-name">Rotation Z</span><span class="param-value" id="polished-rotZ-value">0.00</span></div>
+          <div class="param-row">
+            <input type="range" id="param-polished-rotZ-slider" class="param-slider" min="-180" max="180" step="1" value="0">
+            <input type="number" id="param-polished-rotZ-input" class="param-input" min="-180" max="180" step="1" value="0">
+          </div>
+        </div>
+      </div>
+
+      <!-- Polished Shape Dimensions -->
+      <div class="panel-section" id="polished-dimensions-section" style="display: none;">
+        <div class="panel-title">Polished Dimensions</div>
+        <div class="measurement-grid" id="polished-dimensions-grid">
+          <!-- Will be dynamically populated -->
+        </div>
+      </div>
+
+      <!-- Measurements -->
+      <div class="panel-section">
+        <div class="panel-title">Measurements</div>
+        <div class="measurement-grid">
+          <div class="measurement-card">
+            <div class="meas-value" id="meas-rough-vol">0.000</div>
+            <div class="meas-label">Rough (ct)</div>
+          </div>
+          <div class="measurement-card">
+            <div class="meas-value" id="meas-faceted-vol">0.000</div>
+            <div class="meas-label">Polished (ct)</div>
+          </div>
+          <div class="measurement-card">
+            <div class="meas-value" id="meas-utilization">0.0%</div>
+            <div class="meas-label">Yield %</div>
+          </div>
+          <div class="measurement-card">
+            <div class="meas-value" id="meas-yield">0.000</div>
+            <div class="meas-label">Yield (ct)</div>
+          </div>
+        </div>
+        <div class="utilization-bar" style="margin-top: 12px;">
+          <div class="util-fill" style="width: 0%"></div>
+        </div>
+      </div>
+
+      <!-- View Options -->
+      <div class="panel-section">
+        <div class="panel-title">View Options</div>
+        <div class="toggle-row">
+          <span class="toggle-label">Rough Wireframe</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="rough-wireframe-toggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Polished Edges</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="polished-edges-toggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Axes</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="axes-toggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Grid</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="grid-toggle" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div style="margin-top: 10px;">
+          <button class="btn btn-block" id="reset-camera">Reset Camera</button>
+        </div>
+      </div>
+
+      <!-- Export -->
+      <div class="panel-section">
+        <div class="panel-title">Export</div>
+        <div class="btn-group" style="width: 100%;">
+          <button class="btn" id="export-screenshot">Screenshot</button>
+          <button class="btn" id="export-report">Report</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="statusbar">
+      <div class="status-item">
+        <div class="status-dot"></div>
+        <span>Ready</span>
+      </div>
+      <div class="status-item">
+        <span>Rough:</span>
+        <span id="status-shape">Octahedron</span>
+      </div>
+      <div class="status-item">
+        <span>Faceted:</span>
+        <span id="status-faceted">(none)</span>
+      </div>
+      <div class="status-item" style="margin-left: auto;">
+        <span>Scale:</span>
+        <span id="status-scale">6.0 × 5.0</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Camera Scanner Modal Overlay -->
+  <div id="scanner-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: rgba(13, 13, 26, 0.85); backdrop-filter: blur(10px); justify-content: center; align-items: center; opacity: 0; transition: opacity 0.3s ease;">
+    <div style="position: relative; width: 90%; max-width: 800px; height: 80%; background: #151525; border: 2px solid #3a3a55; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.5);">
+      <!-- Modal Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: #1a1a30; border-bottom: 1px solid #2e2e4a;">
+        <h2 style="margin: 0; font-size: 1.2em; color: #fff; display: flex; align-items: center; gap: 8px;">
+          <span style="animation: pulse-glow 1.5s infinite; color: #4CAF50;">●</span> 3D Camera Scanner
+        </h2>
+        <button id="close-scanner-btn" style="background: none; border: none; color: #aaa; font-size: 1.5em; cursor: pointer; transition: color 0.2s;">&times;</button>
+      </div>
+      <!-- Modal Content (Iframe) -->
+      <iframe id="scanner-iframe" src="about:blank" allow="camera" style="flex: 1; border: none; background: #0d0d1a;"></iframe>
+    </div>
+  </div>
+  <style>
+    @keyframes pulse-glow {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+    #close-scanner-btn:hover { color: #ff5555 !important; }
+  </style>
+
+  <!-- Main Application Entry Point -->
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

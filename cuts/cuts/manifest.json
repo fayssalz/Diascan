@@ -1,0 +1,9 @@
+[
+  { "name": "Round Brilliant", "file": "sample_helium_brilliant.gem", "icon": "💎" },
+  { "name": "Princess",        "file": "sample_helium_princess.gem",  "icon": "🔶" },
+  { "name": "Emerald",         "file": "sample_helium_emerald.gem",   "icon": "⬜" },
+  { "name": "Marquise",        "file": "sample_helium_marquise.gem",  "icon": "💋" },
+  { "name": "Oval",            "file": "sample_helium_oval.gem",      "icon": "⚪" },
+  { "name": "Pear",            "file": "sample_helium_pear.gem",      "icon": "💧" },
+  { "name": "Stepcut",         "file": "sample_helium_stepcut.gem",   "icon": "🟩" }
+]
