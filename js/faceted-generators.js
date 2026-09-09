@@ -14,6 +14,102 @@ import * as THREE from 'three';
 const DEG = Math.PI / 180;
 const LATHE_SEGMENTS = 64;  // Revolution segments for smooth shapes
 
+/**
+ * Ensure geometry vertex normals point outwards from the object center.
+ * If signed volume is negative, face winding order is inverted and corrected.
+ * @param {THREE.BufferGeometry} geometry
+ * @returns {THREE.BufferGeometry}
+ */
+export function ensureOutwardNormals(geometry) {
+  if (!geometry) return geometry;
+
+  geometry.computeBoundingBox();
+  const center = new THREE.Vector3();
+  if (geometry.boundingBox) {
+    geometry.boundingBox.getCenter(center);
+  }
+
+  const posAttr = geometry.getAttribute('position');
+  if (!posAttr) return geometry;
+
+  const index = geometry.getIndex();
+  let signedVolume = 0;
+
+  if (index) {
+    const count = index.count;
+    for (let i = 0; i < count; i += 3) {
+      const i0 = index.getX(i);
+      const i1 = index.getX(i + 1);
+      const i2 = index.getX(i + 2);
+
+      const ax = posAttr.getX(i0) - center.x;
+      const ay = posAttr.getY(i0) - center.y;
+      const az = posAttr.getZ(i0) - center.z;
+
+      const bx = posAttr.getX(i1) - center.x;
+      const by = posAttr.getY(i1) - center.y;
+      const bz = posAttr.getZ(i1) - center.z;
+
+      const cx = posAttr.getX(i2) - center.x;
+      const cy = posAttr.getY(i2) - center.y;
+      const cz = posAttr.getZ(i2) - center.z;
+
+      signedVolume += (
+        ax * (by * cz - bz * cy) +
+        ay * (bz * cx - bx * cz) +
+        az * (bx * cy - by * cx)
+      );
+    }
+  } else {
+    const count = posAttr.count;
+    for (let i = 0; i < count; i += 3) {
+      const ax = posAttr.getX(i) - center.x;
+      const ay = posAttr.getY(i) - center.y;
+      const az = posAttr.getZ(i) - center.z;
+
+      const bx = posAttr.getX(i + 1) - center.x;
+      const by = posAttr.getY(i + 1) - center.y;
+      const bz = posAttr.getZ(i + 1) - center.z;
+
+      const cx = posAttr.getX(i + 2) - center.x;
+      const cy = posAttr.getY(i + 2) - center.y;
+      const cz = posAttr.getZ(i + 2) - center.z;
+
+      signedVolume += (
+        ax * (by * cz - bz * cy) +
+        ay * (bz * cx - bx * cz) +
+        az * (bx * cy - by * cx)
+      );
+    }
+  }
+
+  if (signedVolume < 0) {
+    if (index) {
+      const arr = index.array;
+      for (let i = 0; i < arr.length; i += 3) {
+        const tmp = arr[i + 1];
+        arr[i + 1] = arr[i + 2];
+        arr[i + 2] = tmp;
+      }
+      index.needsUpdate = true;
+    } else {
+      const arr = posAttr.array;
+      for (let i = 0; i < arr.length; i += 9) {
+        for (let k = 0; k < 3; k++) {
+          const tmp = arr[i + 3 + k];
+          arr[i + 3 + k] = arr[i + 6 + k];
+          arr[i + 6 + k] = tmp;
+        }
+      }
+      posAttr.needsUpdate = true;
+    }
+  }
+
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
 // ── Round Brilliant Generator ──────────────────────────────
 
 /**
@@ -64,7 +160,7 @@ export function generateRoundBrilliant(opts = {}) {
   // revolves around Y axis with x = radius. The profile is traced
   // bottom-to-top.
   const geometry = new THREE.LatheGeometry(profile, LATHE_SEGMENTS);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   // Compute volume of the revolution solid
@@ -144,31 +240,30 @@ export function generatePrincess(opts = {}) {
   // --- Faces ---
 
   // Girdle sides (4 quads = 8 triangles)
-  pushQuad(indices, 0, 1, 5, 4); // front
-  pushQuad(indices, 1, 2, 6, 5); // right
-  pushQuad(indices, 2, 3, 7, 6); // back
-  pushQuad(indices, 3, 0, 4, 7); // left
+  pushQuad(indices, 0, 4, 5, 1); // front
+  pushQuad(indices, 1, 5, 6, 2); // right
+  pushQuad(indices, 2, 6, 7, 3); // back
+  pushQuad(indices, 3, 7, 4, 0); // left
 
-  // Crown faces (4 triangles from girdle top to table + table quad)
-  pushQuad(indices, 4, 5, 9, 8);   // front crown
-  pushQuad(indices, 5, 6, 10, 9);  // right crown
-  pushQuad(indices, 6, 7, 11, 10); // back crown
-  pushQuad(indices, 7, 4, 8, 11);  // left crown
+  // Crown faces (4 quads from girdle top to table)
+  pushQuad(indices, 4, 8, 9, 5);   // front crown
+  pushQuad(indices, 5, 9, 10, 6);  // right crown
+  pushQuad(indices, 6, 10, 11, 7); // back crown
+  pushQuad(indices, 7, 11, 8, 4);  // left crown
 
   // Table (2 triangles)
-  indices.push(8, 9, 10);
-  indices.push(8, 10, 11);
+  pushQuad(indices, 8, 11, 10, 9);
 
-  // Pavilion (4 triangles from girdle bottom to culet)
-  indices.push(12, 1, 0); // front
-  indices.push(12, 2, 1); // right
-  indices.push(12, 3, 2); // back
-  indices.push(12, 0, 3); // left
+  // Pavilion (4 triangles from culet 12 to girdle bottom)
+  indices.push(12, 0, 1); // front
+  indices.push(12, 1, 2); // right
+  indices.push(12, 2, 3); // back
+  indices.push(12, 3, 0); // left
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   // Volume = crown frustum + pavilion pyramid
@@ -265,32 +360,32 @@ export function generateEmerald(opts = {}) {
   // Girdle sides
   for (let i = 0; i < 8; i++) {
     const next = (i + 1) % 8;
-    pushQuad(indices, i, next, 8 + next, 8 + i);
+    pushQuad(indices, i, 8 + i, 8 + next, next);
   }
 
   // Crown trapezoids
   for (let i = 0; i < 8; i++) {
     const next = (i + 1) % 8;
-    pushQuad(indices, 8 + i, 8 + next, 16 + next, 16 + i);
+    pushQuad(indices, 8 + i, 16 + i, 16 + next, 8 + next);
   }
 
   // Table (fan from center) — we need a center vertex
   vertices.push(0, ty, 0); // 25
   for (let i = 0; i < 8; i++) {
     const next = (i + 1) % 8;
-    indices.push(25, 16 + i, 16 + next);
+    indices.push(25, 16 + next, 16 + i);
   }
 
   // Pavilion (fan from culet)
   for (let i = 0; i < 8; i++) {
     const next = (i + 1) % 8;
-    indices.push(24, next, i);
+    indices.push(24, i, next);
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   // Approximate volume
@@ -364,28 +459,28 @@ export function generateCushion(opts = {}) {
   // Girdle sides
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, i, next, n + next, n + i);
+    pushQuad(indices, i, n + i, n + next, next);
   }
   // Crown
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, n + i, n + next, 2 * n + next, 2 * n + i);
+    pushQuad(indices, n + i, 2 * n + i, 2 * n + next, n + next);
   }
   // Table
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(tableCenterIdx, 2 * n + i, 2 * n + next);
+    indices.push(tableCenterIdx, 2 * n + next, 2 * n + i);
   }
   // Pavilion
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(culetIdx, next, i);
+    indices.push(culetIdx, i, next);
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   const girdleArea = approximatePolygonArea(girdleOutline);
@@ -459,28 +554,28 @@ export function generateOval(opts = {}) {
   // Girdle sides
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, i, next, n + next, n + i);
+    pushQuad(indices, i, n + i, n + next, next);
   }
   // Crown
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, n + i, n + next, 2 * n + next, 2 * n + i);
+    pushQuad(indices, n + i, 2 * n + i, 2 * n + next, n + next);
   }
   // Table
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(tableCenterIdx, 2 * n + i, 2 * n + next);
+    indices.push(tableCenterIdx, 2 * n + next, 2 * n + i);
   }
   // Pavilion
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(culetIdx, next, i);
+    indices.push(culetIdx, i, next);
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   const girdleArea = Math.PI * hL * hW;
@@ -561,28 +656,28 @@ export function generatePear(opts = {}) {
   // Girdle sides
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, i, next, n + next, n + i);
+    pushQuad(indices, i, n + i, n + next, next);
   }
   // Crown
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    pushQuad(indices, n + i, n + next, 2 * n + next, 2 * n + i);
+    pushQuad(indices, n + i, 2 * n + i, 2 * n + next, n + next);
   }
   // Table
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(tableCenterIdx, 2 * n + i, 2 * n + next);
+    indices.push(tableCenterIdx, 2 * n + next, 2 * n + i);
   }
   // Pavilion
   for (let i = 0; i < n; i++) {
     const next = (i + 1) % n;
-    indices.push(culetIdx, next, i);
+    indices.push(culetIdx, i, next);
   }
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingSphere();
 
   const girdleArea = approximatePolygonArea(girdleOutline);

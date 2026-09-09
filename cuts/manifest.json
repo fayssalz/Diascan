@@ -1,9 +1,116 @@
 [
-  { "name": "Round Brilliant", "file": "sample_helium_brilliant.gem", "icon": "💎" },
-  { "name": "Princess",        "file": "sample_helium_princess.gem",  "icon": "🔶" },
-  { "name": "Emerald",         "file": "sample_helium_emerald.gem",   "icon": "⬜" },
-  { "name": "Marquise",        "file": "sample_helium_marquise.gem",  "icon": "💋" },
-  { "name": "Oval",            "file": "sample_helium_oval.gem",      "icon": "⚪" },
-  { "name": "Pear",            "file": "sample_helium_pear.gem",      "icon": "💧" },
-  { "name": "Stepcut",         "file": "sample_helium_stepcut.gem",   "icon": "🟩" }
+  {
+    "name": "Round Brilliant",
+    "file": "round_brilliant.obj",
+    "type": "obj",
+    "icon": "💎"
+  },
+  {
+    "name": "Princess",
+    "file": "princess.obj",
+    "type": "obj",
+    "icon": "🔶"
+  },
+  {
+    "name": "Cushion Brilliant",
+    "file": "cushion_brilliant.obj",
+    "type": "obj",
+    "icon": "🔷"
+  },
+  {
+    "name": "Modified Cushion",
+    "file": "modified_cushion.obj",
+    "type": "obj",
+    "icon": "💎"
+  },
+  {
+    "name": "Heart Brilliant",
+    "file": "heart_brilliant.obj",
+    "type": "obj",
+    "icon": "❤️"
+  },
+  {
+    "name": "Emerald",
+    "file": "emerald.obj",
+    "type": "obj",
+    "icon": "⬜"
+  },
+  {
+    "name": "Radiant",
+    "file": "radiant.obj",
+    "type": "obj",
+    "icon": "✨"
+  },
+  {
+    "name": "Oval Brilliant",
+    "file": "oval_brilliant.obj",
+    "type": "obj",
+    "icon": "⚪"
+  },
+  {
+    "name": "Elongated Oval",
+    "file": "elongated_oval.obj",
+    "type": "obj",
+    "icon": "⚪"
+  },
+  {
+    "name": "Pear Brilliant",
+    "file": "pear_brilliant.obj",
+    "type": "obj",
+    "icon": "💧"
+  },
+  {
+    "name": "Marquise Brilliant",
+    "file": "marquise_brilliant.obj",
+    "type": "obj",
+    "icon": "💋"
+  },
+  {
+    "name": "Trillion",
+    "file": "trillion.obj",
+    "type": "obj",
+    "icon": "🔺"
+  },
+  {
+    "name": "Triangle",
+    "file": "triangle.obj",
+    "type": "obj",
+    "icon": "📐"
+  },
+  {
+    "name": "Octagon",
+    "file": "octagon.obj",
+    "type": "obj",
+    "icon": "🛑"
+  },
+  {
+    "name": "Hexagon",
+    "file": "hexagon.obj",
+    "type": "obj",
+    "icon": "⬡"
+  },
+  {
+    "name": "Baguette",
+    "file": "baguette.obj",
+    "type": "obj",
+    "icon": "🥖"
+  },
+  {
+    "name": "Tapered Baguette",
+    "file": "tappered_baguette.obj",
+    "type": "obj",
+    "icon": "📐"
+  },
+  {
+    "name": "Coffin",
+    "file": "coffin.obj",
+    "type": "obj",
+    "icon": "⚰️"
+  },
+  {
+    "name": "Flanders",
+    "file": "flanders.obj",
+    "type": "obj",
+    "icon": "⭐"
+  }
 ]

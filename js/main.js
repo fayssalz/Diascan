@@ -15,6 +15,7 @@ THREE.Mesh.prototype.raycast = acceleratedRaycast;
 const csgEvaluator = new Evaluator();
 
 import { GEMLoader } from './gem-loader.js';
+import { ensureOutwardNormals } from './faceted-generators.js';
 import { initScene, setRoughMesh, setFacetedMesh, toggleAxes, toggleGrid, resetCamera, getRenderer, getScene, getCamera, getControls } from './scene.js';
 import { generateOctahedron, generateDodecahedron, generateMacle, generateMakeable } from './rough-generators.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -566,13 +567,14 @@ export function loadFacetedModel(fileOrPath, type) {
     url,
     (loadedObject) => {
       const object = type === 'gltf' ? loadedObject.scene : loadedObject;
-      const modelName = isFile ? fileOrPath.name : url.split('/').pop().replace('sample_helium_', '').replace('.gem', '');
-      const displayName = modelName.charAt(0).toUpperCase() + modelName.slice(1);
+      const rawName = isFile ? fileOrPath.name : url.split('/').pop().replace('sample_helium_', '').replace(/\.(gem|obj|gltf|glb)$/i, '');
+      const displayName = rawName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
       
       // Extract geometry from the loaded object
       let geometry = null;
       object.traverse((child) => {
         if (child.isMesh) {
+          ensureOutwardNormals(child.geometry);
           // Semi-transparent nice blue diamond-like material
           child.material = new THREE.MeshPhysicalMaterial({
             color: 0x64b5f6,
@@ -582,7 +584,8 @@ export function loadFacetedModel(fileOrPath, type) {
             ior: 2.4, // diamond refractive index
             thickness: 2.0,
             transparent: true,
-            opacity: 0.8
+            opacity: 0.8,
+            side: THREE.DoubleSide
           });
           geometry = child.geometry;
           geometry.computeBoundingBox(); // Ensure box is computed for centering
@@ -1206,7 +1209,7 @@ function deserializeGeometry(data) {
   if (data.indices?.length) {
     geometry.setIndex(data.indices);
   }
-  geometry.computeVertexNormals();
+  ensureOutwardNormals(geometry);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
   return geometry;

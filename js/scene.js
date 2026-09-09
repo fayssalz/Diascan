@@ -86,6 +86,12 @@ export function initScene(viewportElement) {
   // Resize Handler
   window.addEventListener('resize', () => onResize(viewportElement));
 
+  // ResizeObserver for element container size changes (drawer toggle, orientation)
+  if (window.ResizeObserver) {
+    const resizeObserver = new ResizeObserver(() => onResize(viewportElement));
+    resizeObserver.observe(viewportElement);
+  }
+
   return { scene, camera, renderer, controls };
 }
 

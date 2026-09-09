@@ -5,7 +5,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { generateFacetedShape } from './faceted-generators.js';
+import { generateFacetedShape, ensureOutwardNormals } from './faceted-generators.js';
 
 export class GEMLoader extends THREE.Loader {
   load(url, onLoad, onProgress, onError) {
@@ -49,7 +49,6 @@ export class GEMLoader extends THREE.Loader {
       } else if (filename.includes('pear')) {
         shapeKey = 'pear';
       } else if (filename.includes('marquise')) {
-        // Fallback or Marquise (which we can approximate using oval or custom profile)
         shapeKey = 'oval'; 
       } else if (filename.includes('stepcut')) {
         shapeKey = 'emerald';
@@ -59,6 +58,7 @@ export class GEMLoader extends THREE.Loader {
       
       console.log(`Mapping binary model to procedural shape: ${shapeKey}`);
       const { geometry, volume } = generateFacetedShape(shapeKey);
+      ensureOutwardNormals(geometry);
       
       const mesh = new THREE.Mesh(geometry);
       const group = new THREE.Group();
@@ -88,13 +88,11 @@ export class GEMLoader extends THREE.Loader {
         // Facet line: f v1 v2 v3 ...
         // .gem files are 1-indexed, so we subtract 1
         const v1 = parseInt(parts[1], 10) - 1;
-        const v2 = parseInt(parts[2], 10) - 1;
-        const v3 = parseInt(parts[3], 10) - 1;
 
-        // Create a triangle fan for polygons with more than 3 vertices
+        // Create a triangle fan for polygons with 3 or more vertices
         for (let i = 2; i < parts.length - 1; i++) {
-            const v_i = parseInt(parts[i + 1], 10) - 1;
-            const v_j = parseInt(parts[i + 2], 10) - 1;
+            const v_i = parseInt(parts[i], 10) - 1;
+            const v_j = parseInt(parts[i + 1], 10) - 1;
             indices.push(v1, v_i, v_j);
         }
       }
@@ -111,7 +109,7 @@ export class GEMLoader extends THREE.Loader {
         geometry.setIndex(indices);
     }
 
-    geometry.computeVertexNormals();
+    ensureOutwardNormals(geometry);
     geometry.computeBoundingSphere();
 
     // Approximate volume of the mesh using bounding box for GemCAD ASCII

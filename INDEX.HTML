@@ -19,9 +19,28 @@
   </script>
 </head>
 <body>
+  <!-- Mobile Header -->
+  <div id="mobile-header">
+    <div class="mobile-logo">
+      <span class="mobile-logo-icon">💎</span> Diamond CAD
+    </div>
+    <div class="mobile-header-actions">
+      <button class="btn btn-sm" id="mobile-toggle-left">💎 Shapes</button>
+      <button class="btn btn-sm" id="mobile-toggle-right">⚙️ Params</button>
+    </div>
+  </div>
+
   <div id="app">
-    <!-- Left Sidebar -->
+    <!-- Drawer Overlay Backdrop for Mobile -->
+    <div id="drawer-backdrop"></div>
+
+    <!-- Left Sidebar / Drawer -->
     <div id="sidebar-left">
+      <div class="drawer-header">
+        <span class="drawer-title">💎 Shape Library</span>
+        <button class="drawer-close-btn" id="close-left-drawer">&times;</button>
+      </div>
+
       <!-- Shape Selector -->
       <div class="panel-section">
         <div class="panel-title">Rough Shapes</div>
@@ -71,8 +90,13 @@
       </div>
     </div>
 
-    <!-- Right Properties Panel -->
+    <!-- Right Properties Panel / Drawer -->
     <div id="sidebar-right">
+      <div class="drawer-header">
+        <span class="drawer-title">⚙️ Parameters & Tools</span>
+        <button class="drawer-close-btn" id="close-right-drawer">&times;</button>
+      </div>
+
       <!-- Rough Parameters -->
       <div class="panel-section">
         <div class="panel-title">Rough Parameters</div>
@@ -339,6 +363,22 @@
         <span id="status-scale">6.0 × 5.0</span>
       </div>
     </div>
+  </div>
+
+  <!-- Mobile Bottom Navigation Bar -->
+  <div id="mobile-navbar">
+    <button class="mobile-nav-item" id="nav-btn-library">
+      <span class="mobile-nav-icon">💎</span>
+      <span class="mobile-nav-label">Library</span>
+    </button>
+    <button class="mobile-nav-item" id="nav-btn-params">
+      <span class="mobile-nav-icon">⚙️</span>
+      <span class="mobile-nav-label">Params</span>
+    </button>
+    <button class="mobile-nav-item active" id="nav-btn-canvas">
+      <span class="mobile-nav-icon">👁️</span>
+      <span class="mobile-nav-label">Canvas</span>
+    </button>
   </div>
 
   <!-- Camera Scanner Modal Overlay -->

@@ -118,6 +118,82 @@ export function initUIPanels(state, callbacks) {
   const listEl = document.getElementById('placed-shapes-list');
   listEl.innerHTML = '<div class="faceted-item-placeholder">No polished shapes placed.</div>';
   updateUIForShape(state.roughType);
+
+  // Bind Mobile Drawer & Navigation Controls
+  initMobileNavigation();
+}
+
+/**
+ * Initialize Mobile Drawer & Navigation Bar Event Handlers
+ */
+function initMobileNavigation() {
+  const sidebarLeft = document.getElementById('sidebar-left');
+  const sidebarRight = document.getElementById('sidebar-right');
+  const backdrop = document.getElementById('drawer-backdrop');
+
+  const btnMobileLeft = document.getElementById('mobile-toggle-left');
+  const btnMobileRight = document.getElementById('mobile-toggle-right');
+
+  const closeLeft = document.getElementById('close-left-drawer');
+  const closeRight = document.getElementById('close-right-drawer');
+
+  const navLibrary = document.getElementById('nav-btn-library');
+  const navParams = document.getElementById('nav-btn-params');
+  const navCanvas = document.getElementById('nav-btn-canvas');
+
+  function openLeftDrawer() {
+    sidebarRight?.classList.remove('open');
+    sidebarLeft?.classList.add('open');
+    backdrop?.classList.add('active');
+    updateNavState('library');
+    triggerResize();
+  }
+
+  function openRightDrawer() {
+    sidebarLeft?.classList.remove('open');
+    sidebarRight?.classList.add('open');
+    backdrop?.classList.add('active');
+    updateNavState('params');
+    triggerResize();
+  }
+
+  function closeAllDrawers() {
+    sidebarLeft?.classList.remove('open');
+    sidebarRight?.classList.remove('open');
+    backdrop?.classList.remove('active');
+    updateNavState('canvas');
+    triggerResize();
+  }
+
+  function updateNavState(activeKey) {
+    navLibrary?.classList.toggle('active', activeKey === 'library');
+    navParams?.classList.toggle('active', activeKey === 'params');
+    navCanvas?.classList.toggle('active', activeKey === 'canvas');
+  }
+
+  function triggerResize() {
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  btnMobileLeft?.addEventListener('click', openLeftDrawer);
+  btnMobileRight?.addEventListener('click', openRightDrawer);
+
+  closeLeft?.addEventListener('click', closeAllDrawers);
+  closeRight?.addEventListener('click', closeAllDrawers);
+
+  backdrop?.addEventListener('click', closeAllDrawers);
+
+  navLibrary?.addEventListener('click', () => {
+    if (sidebarLeft?.classList.contains('open')) closeAllDrawers();
+    else openLeftDrawer();
+  });
+
+  navParams?.addEventListener('click', () => {
+    if (sidebarRight?.classList.contains('open')) closeAllDrawers();
+    else openRightDrawer();
+  });
+
+  navCanvas?.addEventListener('click', closeAllDrawers);
 }
 
 /**
@@ -139,14 +215,16 @@ async function populateGemLibrary() {
 
     gemFiles.forEach(gem => {
       const path = `cuts/${gem.file}`;
+      const fileType = gem.type || (gem.file.endsWith('.gem') ? 'gem' : 'obj');
+      const badgeText = fileType.toUpperCase();
       const btn = document.createElement('button');
       btn.className = 'faceted-item model-btn';
       btn.innerHTML = `
         <span class="faceted-icon">${gem.icon}</span>
         <span class="faceted-name">${gem.name}</span>
-        <span class="faceted-badge">GEM</span>
+        <span class="faceted-badge">${badgeText}</span>
       `;
-      btn.addEventListener('click', () => loadFacetedModel(path, 'gem'));
+      btn.addEventListener('click', () => loadFacetedModel(path, fileType));
       libraryContainer.appendChild(btn);
     });
   } catch (error) {
