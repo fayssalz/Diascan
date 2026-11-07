@@ -1,0 +1,8 @@
+{
+  "name": "Diamond CAD",
+  "description": "WebGL Rough Diamond Visualizer & Editor with 3D scanning, rough stone modeling, and automated cut fitting.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,83 +1,752 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live 3D Voxel Scanner</title>
-    <style>
-        body { margin: 0; font-family: sans-serif; background-color: #101020; color: #fff; overflow: hidden; }
-        canvas { display: block; }
-        #ui-overlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
-            text-align: center;
-            background-color: rgba(0, 0, 0, 0.5);
-            z-index: 10;
-        }
-        #ui-overlay.hidden { display: none; }
-        #ui-overlay h1 { margin-top: 0; }
-        #ui-overlay p { max-width: 400px; margin: 1em auto; }
-        #startScanBtn { padding: 15px 30px; font-size: 18px; cursor: pointer; border-radius: 8px; border: none; background-color: #4CAF50; color: white; }
-        #startScanBtn:disabled { background-color: #aaa; }
-        
-        #progressBarContainer { display: none; width: 80%; max-width: 400px; background-color: #333; border-radius: 5px; margin-top: 20px; }
-        #progressBar { width: 0%; height: 20px; background-color: #4CAF50; border-radius: 5px; transition: width 0.1s; }
-        #progressText { font-size: 1.1em; margin-top: 10px; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3-Axis Diamond Photogrammetry Scanner</title>
+  <style>
+    :root {
+      --bg-main: #0c0f17;
+      --bg-panel: #131722;
+      --bg-card: #181d2c;
+      --border-color: #273145;
+      --border-focus: #00ffc8;
+      --accent: #00ffc8;
+      --accent-glow: rgba(0, 255, 200, 0.35);
+      --accent-blue: #3b82f6;
+      --text-main: #e2e8f0;
+      --text-dim: #94a3b8;
+    }
 
-        #webcamFeed {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            width: 20%;
-            max-width: 240px;
-            border: 2px solid #fff;
-            border-radius: 8px;
-            display: none; /* Hidden by default */
-            z-index: 5;
-        }
-    </style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow-x: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      background: #111520;
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .header-titles h1 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+
+    .header-titles p {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    .preset-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .preset-label {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+
+    .preset-btn {
+      background: #1c2333;
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .preset-btn:hover {
+      background: #252e42;
+      border-color: #435475;
+    }
+
+    .preset-btn.active {
+      background: rgba(0, 255, 200, 0.12);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+      box-shadow: 0 0 10px var(--accent-glow);
+    }
+
+    /* ── Main Layout ─────────────────────────────────────── */
+    .studio-container {
+      display: grid;
+      grid-template-columns: minmax(0, 1.75fr) minmax(360px, 1fr);
+      flex: 1;
+      height: calc(100vh - 65px);
+      overflow: hidden;
+    }
+
+    @media (max-width: 950px) {
+      .studio-container {
+        grid-template-columns: 1fr;
+        height: auto;
+        overflow-y: auto;
+      }
+    }
+
+    /* ── Left Column: 3 Views ────────────────────────────── */
+    .views-section {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow-y: auto;
+    }
+
+    .views-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    @media (max-width: 720px) {
+      .views-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .view-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+
+    .view-card.drag-over {
+      border-color: var(--accent);
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+
+    .card-header {
+      padding: 10px 14px;
+      background: #151926;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .card-title {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .card-subtitle {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+
+    .view-badge {
+      font-size: 0.72rem;
+      padding: 3px 7px;
+      border-radius: 4px;
+      background: #232a3d;
+      color: #94a3b8;
+    }
+
+    .view-badge.active {
+      background: rgba(0, 255, 200, 0.15);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .canvas-wrapper {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      background: #0f121d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .view-canvas {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    .card-controls {
+      padding: 10px 14px;
+      background: #141824;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn-action {
+      flex: 1;
+      padding: 6px 8px;
+      font-size: 0.76rem;
+      background: #1f2738;
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      border-radius: 5px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+
+    .btn-action:hover {
+      background: #2a354c;
+      border-color: #4a5c80;
+    }
+
+    .btn-action.active {
+      background: rgba(0, 255, 200, 0.18);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+    }
+
+    .slider-row input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+      height: 4px;
+    }
+
+    .slider-val {
+      width: 24px;
+      text-align: right;
+      color: var(--accent);
+      font-family: monospace;
+    }
+
+    .guide-tip {
+      background: rgba(59, 130, 246, 0.08);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 0.8rem;
+      color: #bfdbfe;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* ── Right Column: 3D Preview & Actions ──────────────── */
+    .preview-section {
+      background: var(--bg-panel);
+      border-left: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .preview-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .preview-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .preview-viewport-wrap {
+      position: relative;
+      width: 100%;
+      height: 340px;
+      background: #0e111a;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    #preview3d-container {
+      width: 100%;
+      height: 100%;
+    }
+
+    .viewport-controls-overlay {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      display: flex;
+      gap: 6px;
+      z-index: 10;
+    }
+
+    .icon-btn {
+      background: rgba(18, 22, 34, 0.8);
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 5px 8px;
+      border-radius: 5px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      backdrop-filter: blur(4px);
+    }
+
+    .icon-btn.active {
+      background: rgba(0, 255, 200, 0.2);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .stats-card {
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.84rem;
+    }
+
+    .stat-label {
+      color: var(--text-dim);
+    }
+
+    .stat-value {
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .stat-value.highlight {
+      color: var(--accent);
+      font-family: monospace;
+      font-size: 0.95rem;
+    }
+
+    .dimensions-config {
+      padding: 14px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .dim-title {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .dim-inputs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .dim-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .dim-field label {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+    }
+
+    .dim-field input {
+      background: #1a202e;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      padding: 6px 8px;
+      border-radius: 5px;
+      font-size: 0.84rem;
+      text-align: center;
+      outline: none;
+    }
+
+    .dim-field input:focus {
+      border-color: var(--accent);
+    }
+
+    .actions-footer {
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: auto;
+    }
+
+    .btn-primary-apply {
+      background: linear-gradient(135deg, #00ffc8 0%, #00b38c 100%);
+      color: #061e18;
+      border: none;
+      padding: 13px 20px;
+      border-radius: 8px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 4px 15px rgba(0, 255, 200, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .btn-primary-apply:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(0, 255, 200, 0.45);
+    }
+
+    .btn-primary-apply:disabled, .btn-disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .btn-secondary {
+      background: #1e2636;
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      padding: 9px 16px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn-secondary:hover {
+      background: #273248;
+      border-color: #485c80;
+    }
+
+    /* ── Camera Modal Overlay ────────────────────────────── */
+    #camera-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(5, 7, 12, 0.9);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .camera-box {
+      width: 90%;
+      max-width: 540px;
+      background: #141824;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .camera-feed-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    #camera-video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .camera-target-reticle {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 55%;
+      height: 55%;
+      border: 2px dashed rgba(0, 255, 200, 0.7);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+  </style>
+
+  <!-- Three.js Import Map -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
-    <!-- UI for starting the scan -->
-    <div id="ui-overlay">
-        <h1>Live 3D Scanner</h1>
-        <p>Place your object on a turntable against a plain, light-colored background.</p>
-        
-        <canvas id="silhouettePreview" width="320" height="240" style="border: 1px solid #555; margin-top: 1em; background-color: #000;"></canvas>
-        <div id="settings" style="margin: 1em 0;">
-            <label for="thresholdSlider">Silhouette Threshold: </label>
-            <input type="range" id="thresholdSlider" min="0" max="255" value="120" style="vertical-align: middle;">
-            <span id="thresholdValue" style="display: inline-block; width: 30px;">120</span>
-        </div>
-        <p>Adjust the slider until the object is solid black and the background is solid white in the preview above.</p>
-
-        <button id="startScanBtn">Start Scan</button>
-        <div id="progressBarContainer">
-            <div id="progressBar"></div>
-        </div>
-        <p id="progressText"></p>
+  <!-- Header with Mode and Quick Testing Presets -->
+  <header>
+    <div class="header-titles">
+      <h1><span>💎</span> 3-Axis Diamond Photogrammetry Scanner</h1>
+      <p>Upload or snap 3 orthogonal photos (Front, Side, Top) to auto-detect diamond outlines & synthesize a 3D CAD stone.</p>
     </div>
 
-    <!-- Hidden video element for webcam stream and a visible one for the feed -->
-    <video id="webcam" autoplay playsinline muted style="display:none;"></video>
-    <video id="webcamFeed" autoplay playsinline muted></video>
+    <div class="preset-group">
+      <span class="preset-label">Test Presets:</span>
+      <button class="preset-btn active" data-preset="octahedron" title="Classic natural diamond octahedron">
+        <span>🔺</span> Octahedron
+      </button>
+      <button class="preset-btn" data-preset="macle" title="Triangular twinned macle crystal">
+        <span>🔷</span> Macle Twin
+      </button>
+      <button class="preset-btn" data-preset="makeable" title="Irregular alluvial rough stone">
+        <span>✨</span> Freeform
+      </button>
+    </div>
+  </header>
 
-    <!-- Import map to tell the browser where to find "three" -->
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-            }
-        }
-    </script>
-    <script type="module" src="js/scanner.js"></script>
+  <!-- Main Workstation Layout -->
+  <div class="studio-container">
+    <!-- Left Column: The 3 Orthogonal Views -->
+    <div class="views-section">
+      <div class="guide-tip">
+        <span>💡</span>
+        <span><strong>Tip:</strong> Diamonds are automatically outlined in glowing neon cyan. Adjust the sensitivity slider if you need to fine-tune the contour!</span>
+      </div>
+
+      <div class="views-grid">
+        <!-- Card 1: Front View (X-Y) -->
+        <div class="view-card" id="card-front">
+          <div class="card-header">
+            <div>
+              <div class="card-title">1. Front View (X-Y)</div>
+              <div class="card-subtitle">Direct face-on elevation</div>
+            </div>
+            <span class="view-badge" id="badge-front">Ready</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-front" class="view-canvas" width="400" height="400"></canvas>
+          </div>
+          <div class="card-controls">
+            <div class="btn-row">
+              <input type="file" id="input-front" accept="image/*" style="display: none;">
+              <button class="btn-action" id="btn-upload-front">📁 Upload</button>
+              <button class="btn-action" id="btn-cam-front">📷 Camera</button>
+              <button class="btn-action" id="btn-invert-front" title="Invert background / foreground">Invert</button>
+            </div>
+            <div class="slider-row">
+              <span>Threshold:</span>
+              <input type="range" id="slider-front" min="5" max="85" value="28">
+              <span class="slider-val" id="val-front">28</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: Side View (Z-Y) -->
+        <div class="view-card" id="card-side">
+          <div class="card-header">
+            <div>
+              <div class="card-title">2. Side View (Z-Y)</div>
+              <div class="card-subtitle">Profile turned 90°</div>
+            </div>
+            <span class="view-badge" id="badge-side">Ready</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-side" class="view-canvas" width="400" height="400"></canvas>
+          </div>
+          <div class="card-controls">
+            <div class="btn-row">
+              <input type="file" id="input-side" accept="image/*" style="display: none;">
+              <button class="btn-action" id="btn-upload-side">📁 Upload</button>
+              <button class="btn-action" id="btn-cam-side">📷 Camera</button>
+              <button class="btn-action" id="btn-invert-side" title="Invert background / foreground">Invert</button>
+            </div>
+            <div class="slider-row">
+              <span>Threshold:</span>
+              <input type="range" id="slider-side" min="5" max="85" value="28">
+              <span class="slider-val" id="val-side">28</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: Top View (X-Z) -->
+        <div class="view-card" id="card-top">
+          <div class="card-header">
+            <div>
+              <div class="card-title">3. Top View (X-Z)</div>
+              <div class="card-subtitle">Plan view from above</div>
+            </div>
+            <span class="view-badge" id="badge-top">Ready</span>
+          </div>
+          <div class="canvas-wrapper">
+            <canvas id="canvas-top" class="view-canvas" width="400" height="400"></canvas>
+          </div>
+          <div class="card-controls">
+            <div class="btn-row">
+              <input type="file" id="input-top" accept="image/*" style="display: none;">
+              <button class="btn-action" id="btn-upload-top">📁 Upload</button>
+              <button class="btn-action" id="btn-cam-top">📷 Camera</button>
+              <button class="btn-action" id="btn-invert-top" title="Invert background / foreground">Invert</button>
+            </div>
+            <div class="slider-row">
+              <span>Threshold:</span>
+              <input type="range" id="slider-top" min="5" max="85" value="28">
+              <span class="slider-val" id="val-top">28</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: 3D Preview & Actions -->
+    <div class="preview-section">
+      <div class="preview-header">
+        <span class="preview-title"><span>👁️</span> 3D Reconstructed Mesh</span>
+        <span style="font-size: 0.75rem; color: var(--accent);">Interactive Orbit</span>
+      </div>
+
+      <div class="preview-viewport-wrap">
+        <div id="preview3d-container"></div>
+        <div class="viewport-controls-overlay">
+          <button class="icon-btn" id="btn-toggle-wireframe" title="Toggle Wireframe">Wireframe</button>
+          <button class="icon-btn active" id="btn-toggle-rotate" title="Toggle Auto-Rotation">Auto-Spin</button>
+        </div>
+      </div>
+
+      <!-- Stats Card -->
+      <div class="stats-card">
+        <div class="stat-row">
+          <span class="stat-label">Estimated Rough Carats:</span>
+          <span class="stat-value highlight" id="stat-carats">0.82 ct</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Crystal Faces:</span>
+          <span class="stat-value" id="stat-faces">28 facets</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Mesh Vertices:</span>
+          <span class="stat-value" id="stat-verts">34 vertices</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Target Bounding Size:</span>
+          <span class="stat-value" id="stat-dims">5.0 × 6.0 × 5.0 mm</span>
+        </div>
+      </div>
+
+      <!-- Dimensions Calibration -->
+      <div class="dimensions-config">
+        <span class="dim-title">Physical Stone Scale (Millimeters)</span>
+        <div class="dim-inputs">
+          <div class="dim-field">
+            <label>Width (X)</label>
+            <input type="number" id="dim-width" value="5.0" min="1" max="50" step="0.1">
+          </div>
+          <div class="dim-field">
+            <label>Height (Y)</label>
+            <input type="number" id="dim-height" value="6.0" min="1" max="50" step="0.1">
+          </div>
+          <div class="dim-field">
+            <label>Length (Z)</label>
+            <input type="number" id="dim-length" value="5.0" min="1" max="50" step="0.1">
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="actions-footer">
+        <button class="btn-primary-apply" id="btn-apply-cad">
+          <span>💎</span> Apply to Diamond CAD (Import Makeable)
+        </button>
+        <button class="btn-secondary" id="btn-export-obj">
+          <span>📥</span> Download .OBJ Model
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Webcam Snapshot Modal -->
+  <div id="camera-modal">
+    <div class="camera-box">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="font-size: 1rem; color: #fff;">Take Photo for Diamond View</h3>
+        <button id="btn-close-camera" style="background: none; border: none; color: #aaa; font-size: 1.4rem; cursor: pointer;">&times;</button>
+      </div>
+      <div class="camera-feed-wrap">
+        <video id="camera-video" autoplay playsinline muted></video>
+        <div class="camera-target-reticle"></div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button id="btn-snap-camera" class="btn-primary-apply" style="flex: 1; padding: 10px;">
+          <span>📸</span> Capture & Highlight
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Entry Script -->
+  <script type="module" src="js/scanner-3axis.js"></script>
 </body>
 </html>

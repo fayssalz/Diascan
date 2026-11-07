@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Diamond CAD — WebGL Rough Diamond Visualizer & Editor</title>
+  <meta name="description" content="WebGL Rough Diamond Visualizer & Editor with 3D scanning, rough stone modeling, and automated cut fitting.">
+  <meta property="og:title" content="Diamond CAD">
+  <meta property="og:description" content="WebGL Rough Diamond Visualizer & Editor with 3D scanning, rough stone modeling, and automated cut fitting.">
   <link rel="stylesheet" href="css/style.css">
   
   <!-- Three.js CDN Import Map -->
@@ -168,8 +171,8 @@
         </div>
 
         <div class="param-group" id="param-scan-rough" style="display: none; margin-top: 15px;">
-          <button class="btn btn-primary btn-block" id="btn-scan-rough" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: bold; background: linear-gradient(135deg, #4c9faf 0%, #2e6b7d 100%); border: none;">
-            <span>📷</span> Scan Rough Diamond
+          <button class="btn btn-primary btn-block" id="btn-scan-rough" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; font-weight: bold; background: linear-gradient(135deg, #00b38c 0%, #00735c 100%); border: none;">
+            <span>📷</span> 3-Axis Photo Scanner (Rough Diamond)
           </button>
         </div>
 
@@ -382,17 +385,17 @@
   </div>
 
   <!-- Camera Scanner Modal Overlay -->
-  <div id="scanner-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: rgba(13, 13, 26, 0.85); backdrop-filter: blur(10px); justify-content: center; align-items: center; opacity: 0; transition: opacity 0.3s ease;">
-    <div style="position: relative; width: 90%; max-width: 800px; height: 80%; background: #151525; border: 2px solid #3a3a55; border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 50px rgba(0,0,0,0.5);">
+  <div id="scanner-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1000; background: rgba(10, 13, 22, 0.88); backdrop-filter: blur(10px); justify-content: center; align-items: center; opacity: 0; transition: opacity 0.3s ease;">
+    <div style="position: relative; width: 96%; max-width: 1280px; height: 92%; background: #131722; border: 2px solid #273145; border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 25px 60px rgba(0,0,0,0.65);">
       <!-- Modal Header -->
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: #1a1a30; border-bottom: 1px solid #2e2e4a;">
-        <h2 style="margin: 0; font-size: 1.2em; color: #fff; display: flex; align-items: center; gap: 8px;">
-          <span style="animation: pulse-glow 1.5s infinite; color: #4CAF50;">●</span> 3D Camera Scanner
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: #0f121d; border-bottom: 1px solid #273145;">
+        <h2 style="margin: 0; font-size: 1.15rem; color: #fff; display: flex; align-items: center; gap: 8px;">
+          <span style="color: #00ffc8;">💎</span> 3-Axis Rough Diamond Photogrammetry Scanner
         </h2>
-        <button id="close-scanner-btn" style="background: none; border: none; color: #aaa; font-size: 1.5em; cursor: pointer; transition: color 0.2s;">&times;</button>
+        <button id="close-scanner-btn" style="background: none; border: none; color: #aaa; font-size: 1.6em; cursor: pointer; transition: color 0.2s; line-height: 1;">&times;</button>
       </div>
       <!-- Modal Content (Iframe) -->
-      <iframe id="scanner-iframe" src="about:blank" allow="camera" style="flex: 1; border: none; background: #0d0d1a;"></iframe>
+      <iframe id="scanner-iframe" src="about:blank" allow="camera" style="flex: 1; border: none; background: #0c0f17;"></iframe>
     </div>
   </div>
   <style>

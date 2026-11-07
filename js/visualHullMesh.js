@@ -109,9 +109,154 @@ export async function carveConvexVisualHullMesh(frames, camera, onProgress, opti
     return { mesh, geometry };
 }
 
+/**
+ * Analytical 3-Axis Orthogonal Visual Hull Reconstruction.
+ * Synthesizes a watertight, faceted 3D rough diamond crystal mesh
+ * by intersecting silhouette prisms from Front, Side, and Top photographic views.
+ *
+ * @param {Array<[number, number]>} frontHull2D - Front view (X-Y plane) 2D contour polygon
+ * @param {Array<[number, number]>} sideHull2D  - Side view (Z-Y plane) 2D contour polygon
+ * @param {Array<[number, number]>} topHull2D   - Top view (X-Z plane) 2D contour polygon
+ * @param {Object} dimensions - { width, height, length } in millimeters
+ * @returns {{ mesh: THREE.Mesh, geometry: THREE.BufferGeometry, volume: number, faces: Array }}
+ */
+export function reconstruct3AxisVisualHull(frontHull2D, sideHull2D, topHull2D, dimensions = {}) {
+    const width  = dimensions.width  || 5.0;
+    const height = dimensions.height || 6.0;
+    const length = dimensions.length || 5.0;
+
+    const maxDim = Math.max(width, height, length, 1.0);
+    let faces = makeBoxFaces(maxDim * 1.5);
+
+    function normalizePoly(poly, targetW, targetH) {
+        if (!poly || poly.length < 3) return null;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [x, y] of poly) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+        const spanX = Math.max(maxX - minX, 1e-4);
+        const spanY = Math.max(maxY - minY, 1e-4);
+        const cx = (minX + maxX) / 2;
+        const cy = (minY + maxY) / 2;
+        return poly.map(([x, y]) => [
+            ((x - cx) / spanX) * targetW,
+            ((cy - y) / spanY) * targetH
+        ]);
+    }
+
+    // 1. Front View: (X, Y)
+    const normFront = normalizePoly(frontHull2D, width, height);
+    if (normFront) {
+        const n = normFront.length;
+        for (let i = 0; i < n; i++) {
+            const [x0, y0] = normFront[i];
+            const [x1, y1] = normFront[(i + 1) % n];
+            const dx = x1 - x0;
+            const dy = y1 - y0;
+            const len = Math.hypot(dx, dy);
+            if (len < 1e-6) continue;
+            const normal = new THREE.Vector3(dy / len, -dx / len, 0);
+            let d = normal.x * x0 + normal.y * y0;
+            if (d < 0) { normal.negate(); d = -d; }
+            faces = clipByHalfSpace(faces, normal, d);
+            if (faces.length === 0) break;
+        }
+    }
+
+    // 2. Side View: (Z, Y)
+    const normSide = normalizePoly(sideHull2D, length, height);
+    if (normSide && faces.length > 0) {
+        const n = normSide.length;
+        for (let i = 0; i < n; i++) {
+            const [z0, y0] = normSide[i];
+            const [z1, y1] = normSide[(i + 1) % n];
+            const dz = z1 - z0;
+            const dy = y1 - y0;
+            const len = Math.hypot(dz, dy);
+            if (len < 1e-6) continue;
+            // In (Z, Y) plane, normal perpendicular to (dz, dy) is (dy, -dz)
+            const normal = new THREE.Vector3(0, -dz / len, dy / len);
+            let d = normal.z * z0 + normal.y * y0;
+            if (d < 0) { normal.negate(); d = -d; }
+            faces = clipByHalfSpace(faces, normal, d);
+            if (faces.length === 0) break;
+        }
+    }
+
+    // 3. Top View: (X, Z)
+    const normTop = normalizePoly(topHull2D, width, length);
+    if (normTop && faces.length > 0) {
+        const n = normTop.length;
+        for (let i = 0; i < n; i++) {
+            const [x0, z0] = normTop[i];
+            const [x1, z1] = normTop[(i + 1) % n];
+            const dx = x1 - x0;
+            const dz = z1 - z0;
+            const len = Math.hypot(dx, dz);
+            if (len < 1e-6) continue;
+            // In (X, Z) plane, normal perpendicular to (dx, dz) is (dz, -dx)
+            const normal = new THREE.Vector3(dz / len, 0, -dx / len);
+            let d = normal.x * x0 + normal.z * z0;
+            if (d < 0) { normal.negate(); d = -d; }
+            faces = clipByHalfSpace(faces, normal, d);
+            if (faces.length === 0) break;
+        }
+    }
+
+    if (faces.length === 0) {
+        console.warn('Polyhedron vanished during 3-axis reconstruction. Using fallback shape.');
+        const fallbackGeom = new THREE.OctahedronGeometry(width / 2);
+        fallbackGeom.scale(1, height / width, length / width);
+        fallbackGeom.computeVertexNormals();
+        return {
+            geometry: fallbackGeom,
+            mesh: new THREE.Mesh(fallbackGeom),
+            faces: [],
+            volume: (width * height * length) / 3
+        };
+    }
+
+    faces = mergeCoplanarFaces(faces);
+    const geometry = trianglateFacesToGeometry(faces);
+    geometry.center();
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    // Compute volume
+    let volume = 0;
+    const pos = geometry.attributes.position.array;
+    const idx = geometry.index ? geometry.index.array : null;
+    if (idx) {
+        const p1 = new THREE.Vector3();
+        const p2 = new THREE.Vector3();
+        const p3 = new THREE.Vector3();
+        for (let i = 0; i < idx.length; i += 3) {
+            p1.set(pos[idx[i]*3], pos[idx[i]*3+1], pos[idx[i]*3+2]);
+            p2.set(pos[idx[i+1]*3], pos[idx[i+1]*3+1], pos[idx[i+1]*3+2]);
+            p3.set(pos[idx[i+2]*3], pos[idx[i+2]*3+1], pos[idx[i+2]*3+2]);
+            volume += p1.dot(p2.cross(p3)) / 6.0;
+        }
+    }
+    volume = Math.abs(volume);
+
+    const material = new THREE.MeshStandardMaterial({
+        color: 0x88ccee,
+        roughness: 0.15,
+        metalness: 0.1,
+        flatShading: true
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+
+    return { mesh, geometry, volume, faces };
+}
+
 // ── 2D silhouette contour → convex hull ─────────────────────────────────────
 
-function extractSilhouetteHull2D(canvas) {
+export function extractSilhouetteHull2D(canvas) {
     const w = canvas.width, h = canvas.height;
     const ctx = canvas.getContext('2d');
     const data = ctx.getImageData(0, 0, w, h).data;
@@ -131,9 +276,9 @@ function extractSilhouetteHull2D(canvas) {
     return convexHull2D(boundary);
 }
 
-function cross2D(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
+export function cross2D(o, a, b) { return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); }
 
-function convexHull2D(points) {
+export function convexHull2D(points) {
     const pts = points.slice().sort((a, b) => a[0] === b[0] ? a[1] - b[1] : a[0] - b[0]);
     const n = pts.length;
     if (n < 3) return pts;
@@ -185,7 +330,7 @@ function hullToHalfSpaces(hullPoints2D, canvasWidth, canvasHeight, camera, rotat
 
 // ── Convex polyhedron half-space clipping (validated separately) ───────────
 
-function makeBoxFaces(halfSize) {
+export function makeBoxFaces(halfSize) {
     const s = halfSize;
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     return [
@@ -198,7 +343,7 @@ function makeBoxFaces(halfSize) {
     ].map(vertices => ({ vertices }));
 }
 
-function faceNormal(vertices) {
+export function faceNormal(vertices) {
     const n = new THREE.Vector3();
     for (let i = 0; i < vertices.length; i++) {
         const a = vertices[i];
@@ -210,7 +355,7 @@ function faceNormal(vertices) {
     return n.normalize();
 }
 
-function clipFace(vertices, normal, d, eps) {
+export function clipFace(vertices, normal, d, eps) {
     const n = vertices.length;
     const out = [];
     let exitPoint = null, entryPoint = null;
@@ -237,7 +382,7 @@ function clipFace(vertices, normal, d, eps) {
     return { polygon: out.length >= 3 ? out : null, exitPoint, entryPoint };
 }
 
-function stitchLoops(segments, eps) {
+export function stitchLoops(segments, eps) {
     const remaining = segments.slice();
     const loops = [];
     while (remaining.length > 0) {
@@ -258,7 +403,7 @@ function stitchLoops(segments, eps) {
     return loops;
 }
 
-function clipByHalfSpace(faces, normal, d, eps = 1e-6) {
+export function clipByHalfSpace(faces, normal, d, eps = 1e-6) {
     const newFaces = [];
     const capSegments = [];
 
@@ -283,7 +428,7 @@ function clipByHalfSpace(faces, normal, d, eps = 1e-6) {
 
 // ── Cleanup: merge coplanar faces, drop degenerate slivers ─────────────────
 
-function faceArea(vertices) {
+export function faceArea(vertices) {
     let area = 0;
     for (let i = 1; i < vertices.length - 1; i++) {
         const a = vertices[i].clone().sub(vertices[0]);
@@ -293,7 +438,7 @@ function faceArea(vertices) {
     return area;
 }
 
-function mergeCoplanarFaces(faces, angleCos = 0.999, offsetEps = 1e-3) {
+export function mergeCoplanarFaces(faces, angleCos = 0.999, offsetEps = 1e-3) {
     const groups = [];
     for (const face of faces) {
         if (face.vertices.length < 3) continue;
@@ -332,7 +477,7 @@ function mergeCoplanarFaces(faces, angleCos = 0.999, offsetEps = 1e-3) {
 
 // ── Faces → renderable BufferGeometry (flat-shaded, fan-triangulated) ──────
 
-function trianglateFacesToGeometry(faces) {
+export function trianglateFacesToGeometry(faces) {
     const positions = [];
     const normals = [];
     const indices = [];

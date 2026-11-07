@@ -206,15 +206,19 @@ function init() {
     const { type, geometry: serializedGeometry } = (event.data || {});
 
     if (type === 'SCANNED_MODEL' && serializedGeometry) {
-      console.log('Received scanned model from scanner.');
+      console.log('Received scanned model from 3-axis scanner.');
       state.scannedGeometry = deserializeGeometry(serializedGeometry);
+      if (event.data.roughParams) {
+        state.roughParams.height = event.data.roughParams.height || state.roughParams.height;
+        state.roughParams.width = event.data.roughParams.width || state.roughParams.width;
+        state.roughParams.length = event.data.roughParams.length || state.roughParams.length;
+      }
       // Switch to Makeable and regenerate with the new geometry
       onShapeSelect('makeable');
     }
 
     if (type === 'SCAN_DONE') {
-      // Auto-close the scanner modal 1.5 s after scan finishes
-      setTimeout(closeScanner, 1500);
+      setTimeout(closeScanner, 600);
     }
   });
 
@@ -441,6 +445,18 @@ function onShapeSelect(type) {
     macle:       { height: 2.0, width: 5.0, length: 5.0, aspectRatio: 1.2, girdleThickness: 0.0, twistAngle: 15 },
     makeable:    { height: 6.0, width: 5.0, length: 5.0, aspectRatio: 1.2, girdleThickness: 0.0, twistAngle: 0 },
   };
+
+  if (type === 'makeable' && state.scannedGeometry) {
+    state.scannedGeometry.computeBoundingBox();
+    const sz = new THREE.Vector3();
+    state.scannedGeometry.boundingBox.getSize(sz);
+    if (sz.x > 0.1 && sz.y > 0.1 && sz.z > 0.1) {
+      defaults.makeable.width = parseFloat(sz.x.toFixed(2));
+      defaults.makeable.height = parseFloat(sz.y.toFixed(2));
+      defaults.makeable.length = parseFloat(sz.z.toFixed(2));
+      defaults.makeable.aspectRatio = parseFloat((sz.x / sz.z).toFixed(2));
+    }
+  }
 
   state.roughParams = { ...defaults[type] };
   state.lockAspect = true;

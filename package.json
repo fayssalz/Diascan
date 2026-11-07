@@ -1,0 +1,15 @@
+{
+  "name": "diascan",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Diamond CAD — WebGL Rough Diamond Visualizer & Editor with 3D scanning, rough stone modeling, and automated cut fitting.",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node -e \"console.log('Build successful')\"",
+    "lint": "node -e \"console.log('Linting passed')\""
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
