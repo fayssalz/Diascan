@@ -102,22 +102,188 @@
       font-weight: 600;
       box-shadow: 0 0 10px var(--accent-glow);
     }
+    /* ── Axis Navigation Bar ────────────────────────────── */
+    .axis-nav-container {
+      background: #111522;
+      border-bottom: 1px solid var(--border-color);
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+
+    .axis-nav-bar {
+      display: flex;
+      gap: 6px;
+      width: 100%;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .axis-nav-bar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .axis-tab {
+      flex: 1;
+      min-width: 95px;
+      padding: 6px 10px;
+      background: #171c2b;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      border-radius: 7px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      touch-action: manipulation;
+    }
+
+    .axis-tab:hover {
+      background: #20273c;
+      color: #fff;
+      border-color: #3b4966;
+    }
+
+    .axis-tab.active {
+      background: rgba(0, 255, 200, 0.12);
+      border-color: var(--accent);
+      color: #fff;
+      box-shadow: 0 0 10px rgba(0, 255, 200, 0.25);
+    }
+
+    .axis-tab-num, .axis-tab-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #fff;
+      flex-shrink: 0;
+    }
+
+    .axis-tab.active .axis-tab-num,
+    .axis-tab.active .axis-tab-icon {
+      background: var(--accent);
+      color: #081a17;
+    }
+
+    .axis-tab-meta {
+      display: flex;
+      flex-direction: column;
+      text-align: left;
+      line-height: 1.15;
+      overflow: hidden;
+    }
+
+    .axis-tab-title {
+      font-size: 0.78rem;
+      font-weight: 600;
+      white-space: nowrap;
+      color: inherit;
+    }
+
+    .axis-tab-sub {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .axis-tab.active .axis-tab-sub {
+      color: var(--accent);
+    }
+
+    .axis-tab-badge {
+      margin-left: auto;
+      font-size: 0.68rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-dim);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .axis-tab.active .axis-tab-badge {
+      background: rgba(0, 255, 200, 0.2);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .axis-tab-3d {
+      border-color: rgba(59, 130, 246, 0.4);
+    }
+
+    .axis-tab-3d.active {
+      border-color: var(--accent);
+    }
 
     /* ── Main Layout ─────────────────────────────────────── */
     .studio-container {
       display: grid;
       grid-template-columns: minmax(0, 1.75fr) minmax(360px, 1fr);
       flex: 1;
-      height: calc(100vh - 65px);
+      height: calc(100vh - 110px);
       overflow: hidden;
     }
 
-    @media (max-width: 950px) {
-      .studio-container {
-        grid-template-columns: 1fr;
-        height: auto;
-        overflow-y: auto;
-      }
+    /* Single Tab Focus View (Standard on mobile & toggleable on desktop) */
+    body.tab-view-mode .studio-container {
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 110px);
+      overflow: hidden;
+    }
+
+    body.tab-view-mode .views-section {
+      flex: 1;
+      width: 100%;
+      max-width: 620px;
+      margin: 0 auto;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    body.tab-view-mode .views-grid {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+    }
+
+    body.tab-view-mode .view-card {
+      display: none;
+      width: 100%;
+    }
+
+    body.tab-view-mode .view-card.active {
+      display: flex;
+    }
+
+    body.tab-view-mode.showing-3d .views-section {
+      display: none;
+    }
+
+    body.tab-view-mode.showing-3d .preview-section {
+      display: flex;
+      flex: 1;
+      width: 100%;
+      max-width: 680px;
+      margin: 0 auto;
+      border-left: none;
+    }
+
+    body.tab-view-mode:not(.showing-3d) .preview-section {
+      display: none;
     }
 
     /* ── Left Column: 3 Views ────────────────────────────── */
@@ -133,12 +299,6 @@
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 14px;
-    }
-
-    @media (max-width: 720px) {
-      .views-grid {
-        grid-template-columns: 1fr;
-      }
     }
 
     .view-card {
@@ -193,12 +353,15 @@
     .canvas-wrapper {
       position: relative;
       width: 100%;
+      max-width: min(100vw - 28px, 420px, calc(100vh - 350px));
       aspect-ratio: 1 / 1;
       background: #0f121d;
       display: flex;
       align-items: center;
       justify-content: center;
       overflow: hidden;
+      margin: 0 auto;
+      border-radius: 6px;
     }
 
     .view-canvas {
@@ -206,6 +369,7 @@
       height: 100%;
       object-fit: contain;
       display: block;
+      touch-action: none;
     }
 
     .card-controls {
@@ -225,6 +389,7 @@
     .btn-action {
       flex: 1;
       padding: 6px 8px;
+      min-height: 38px;
       font-size: 0.76rem;
       background: #1f2738;
       border: 1px solid var(--border-color);
@@ -236,6 +401,7 @@
       justify-content: center;
       gap: 5px;
       transition: all 0.2s;
+      touch-action: manipulation;
     }
 
     .btn-action:hover {
@@ -646,16 +812,287 @@
       object-fit: cover;
     }
 
-    .camera-target-reticle {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 55%;
-      height: 55%;
-      border: 2px dashed rgba(0, 255, 200, 0.7);
-      border-radius: 50%;
-      pointer-events: none;
+    /* ── Step Navigation Bar inside each View Card ──────── */
+    .card-step-nav {
+      padding: 10px 14px;
+      background: #111420;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step-indicator {
+      font-size: 0.74rem;
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+
+    .btn-step-prev, .btn-step-next {
+      padding: 8px 14px;
+      min-height: 40px;
+      background: #1d2435;
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+      touch-action: manipulation;
+    }
+
+    .btn-step-prev:hover, .btn-step-next:hover {
+      background: #29344c;
+      border-color: #4a5c80;
+      color: #fff;
+    }
+
+    .btn-step-accent {
+      background: rgba(0, 255, 200, 0.18);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-step-accent:hover {
+      background: rgba(0, 255, 200, 0.28);
+      color: #fff;
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+
+    .btn-back-outlines {
+      padding: 6px 12px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      background: #1e2638;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      border-radius: 5px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn-back-outlines:hover {
+      background: #28334b;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    body:not(.tab-view-mode) .btn-back-outlines {
+      display: none !important;
+    }
+
+    /* ── Mobile Floating Action Bar ──────────────────────── */
+    .mobile-floating-bar {
+      display: none;
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(14, 18, 28, 0.95);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border-color);
+      padding: 8px 14px;
+      z-index: 40;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    }
+
+    .floating-carat-wrap {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .floating-label {
+      font-size: 0.68rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .floating-carat-val {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--accent);
+      font-family: monospace;
+    }
+
+    .floating-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-floating-view3d {
+      background: #1e2638;
+      border: 1px solid var(--border-color);
+      color: #fff;
+      padding: 8px 12px;
+      min-height: 42px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      touch-action: manipulation;
+    }
+
+    .btn-floating-apply {
+      background: linear-gradient(135deg, #00ffc8 0%, #00b38c 100%);
+      color: #061e18;
+      border: none;
+      padding: 8px 14px;
+      min-height: 42px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 2px 10px rgba(0, 255, 200, 0.3);
+      touch-action: manipulation;
+    }
+
+    /* ── Responsive Mobile Optimizations (<= 1024px) ───────── */
+    @media (max-width: 1024px) {
+      body {
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      .mobile-floating-bar {
+        display: flex;
+      }
+
+      .desktop-only {
+        display: none !important;
+      }
+
+      .guide-tip {
+        display: none;
+      }
+
+      header {
+        padding: 8px 12px;
+      }
+
+      .header-titles p {
+        display: none;
+      }
+
+      .header-titles h1 {
+        font-size: 1rem;
+      }
+
+      .preset-btn {
+        padding: 5px 9px;
+        font-size: 0.76rem;
+      }
+
+      .axis-nav-container {
+        padding: 4px 8px;
+      }
+
+      .axis-tab {
+        min-width: 80px;
+        padding: 5px 8px;
+      }
+
+      .axis-tab-num, .axis-tab-icon {
+        width: 18px;
+        height: 18px;
+        font-size: 0.7rem;
+      }
+
+      .axis-tab-title {
+        font-size: 0.72rem;
+      }
+
+      .axis-tab-sub {
+        font-size: 0.64rem;
+      }
+
+      .studio-container {
+        height: calc(100vh - 100px);
+        padding-bottom: 58px;
+        overflow: hidden;
+      }
+
+      body.tab-view-mode .studio-container {
+        height: calc(100vh - 100px);
+        padding-bottom: 58px;
+      }
+
+      body.tab-view-mode .views-section {
+        padding: 6px 10px;
+      }
+
+      .card-header {
+        padding: 8px 10px;
+      }
+
+      .mode-tabs {
+        padding: 3px 4px;
+      }
+
+      .mode-tab {
+        padding: 8px 6px;
+        font-size: 0.76rem;
+      }
+
+      .card-controls {
+        padding: 8px 10px;
+        gap: 6px;
+      }
+
+      .btn-action {
+        min-height: 42px;
+        font-size: 0.78rem;
+      }
+
+      .btn-mini {
+        padding: 8px 8px;
+        min-height: 40px;
+        font-size: 0.78rem;
+      }
+
+      .slider-row {
+        gap: 6px;
+      }
+
+      .slider-row input[type="range"] {
+        height: 8px;
+      }
+
+      .card-step-nav {
+        padding: 8px 10px;
+      }
+
+      .btn-step-prev, .btn-step-next {
+        min-height: 42px;
+        font-size: 0.8rem;
+      }
+
+      body.tab-view-mode.showing-3d .preview-section {
+        padding-bottom: 20px;
+      }
+
+      .preview-viewport-wrap {
+        height: 280px;
+      }
     }
   </style>
 
@@ -691,6 +1128,54 @@
     </div>
   </header>
 
+  <!-- Handy Mobile & Adaptive Axis Tab Bar -->
+  <div class="axis-nav-container">
+    <div class="axis-nav-bar" id="axis-nav-bar">
+      <button class="axis-tab active" data-axis="front" id="axis-tab-front">
+        <span class="axis-tab-num">1</span>
+        <div class="axis-tab-meta">
+          <span class="axis-tab-title">Front View</span>
+          <span class="axis-tab-sub">X-Y</span>
+        </div>
+        <span class="axis-tab-badge" id="axis-badge-front">Ready</span>
+      </button>
+
+      <button class="axis-tab" data-axis="side" id="axis-tab-side">
+        <span class="axis-tab-num">2</span>
+        <div class="axis-tab-meta">
+          <span class="axis-tab-title">Side View</span>
+          <span class="axis-tab-sub">Z-Y</span>
+        </div>
+        <span class="axis-tab-badge" id="axis-badge-side">Ready</span>
+      </button>
+
+      <button class="axis-tab" data-axis="top" id="axis-tab-top">
+        <span class="axis-tab-num">3</span>
+        <div class="axis-tab-meta">
+          <span class="axis-tab-title">Top View</span>
+          <span class="axis-tab-sub">X-Z</span>
+        </div>
+        <span class="axis-tab-badge" id="axis-badge-top">Ready</span>
+      </button>
+
+      <button class="axis-tab axis-tab-3d" data-axis="preview3d" id="axis-tab-preview3d">
+        <span class="axis-tab-icon">👁️</span>
+        <div class="axis-tab-meta">
+          <span class="axis-tab-title">3D Mesh</span>
+          <span class="axis-tab-sub" id="axis-carats-sub">0.82 ct</span>
+        </div>
+      </button>
+
+      <button class="axis-tab axis-tab-all desktop-only" data-axis="all" id="axis-tab-all" title="View all 3 axes side-by-side">
+        <span class="axis-tab-icon">⊞</span>
+        <div class="axis-tab-meta">
+          <span class="axis-tab-title">All Views</span>
+          <span class="axis-tab-sub">Grid</span>
+        </div>
+      </button>
+    </div>
+  </div>
+
   <!-- Main Workstation Layout -->
   <div class="studio-container">
     <!-- Left Column: The 3 Orthogonal Views -->
@@ -702,7 +1187,7 @@
 
       <div class="views-grid">
         <!-- Card 1: Front View (X-Y) -->
-        <div class="view-card" id="card-front">
+        <div class="view-card active" id="card-front">
           <div class="card-header">
             <div>
               <div class="card-title">1. Front View (X-Y)</div>
@@ -752,6 +1237,14 @@
               <button class="btn-mini" id="btn-smooth-front" title="Smooth & snap crystal facets">🧲 Smooth</button>
               <button class="btn-mini danger" id="btn-clear-front" title="Clear outline points">🗑️ Clear</button>
             </div>
+          </div>
+
+          <!-- Step Navigation Bar -->
+          <div class="card-step-nav">
+            <span class="step-indicator">Step 1 of 3: Front Elevation</span>
+            <button class="btn-step-next" data-goto="side">
+              <span>Next: Side View (Z-Y)</span> <span>→</span>
+            </button>
           </div>
         </div>
 
@@ -807,6 +1300,17 @@
               <button class="btn-mini danger" id="btn-clear-side" title="Clear outline points">🗑️ Clear</button>
             </div>
           </div>
+
+          <!-- Step Navigation Bar -->
+          <div class="card-step-nav">
+            <button class="btn-step-prev" data-goto="front">
+              <span>←</span> <span>Front View</span>
+            </button>
+            <span class="step-indicator">Step 2 of 3: Side Profile</span>
+            <button class="btn-step-next" data-goto="top">
+              <span>Top View</span> <span>→</span>
+            </button>
+          </div>
         </div>
 
         <!-- Card 3: Top View (X-Z) -->
@@ -861,14 +1365,30 @@
               <button class="btn-mini danger" id="btn-clear-top" title="Clear outline points">🗑️ Clear</button>
             </div>
           </div>
+
+          <!-- Step Navigation Bar -->
+          <div class="card-step-nav">
+            <button class="btn-step-prev" data-goto="side">
+              <span>←</span> <span>Side View</span>
+            </button>
+            <span class="step-indicator">Step 3 of 3: Top Plan</span>
+            <button class="btn-step-next btn-step-accent" data-goto="preview3d">
+              <span>👁️ View 3D Mesh</span> <span>→</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- Right Column: 3D Preview & Actions -->
-    <div class="preview-section">
+    <div class="preview-section" id="section-preview3d">
       <div class="preview-header">
-        <span class="preview-title"><span>👁️</span> 3D Reconstructed Mesh</span>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <button class="btn-back-outlines" id="btn-back-to-outlines" data-goto="front" title="Back to 2D outline views">
+            <span>←</span> Outlines
+          </button>
+          <span class="preview-title"><span>👁️</span> 3D Reconstructed Mesh</span>
+        </div>
         <span style="font-size: 0.75rem; color: var(--accent);">Interactive Orbit</span>
       </div>
 
@@ -928,6 +1448,22 @@
           <span>📥</span> Download .OBJ Model
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- Floating Mobile Quick Drawer / Action Bar -->
+  <div id="mobile-floating-bar" class="mobile-floating-bar">
+    <div class="floating-carat-wrap">
+      <span class="floating-label">Est. Weight:</span>
+      <span class="floating-carat-val" id="floating-carats-val">0.82 ct</span>
+    </div>
+    <div class="floating-actions">
+      <button class="btn-floating-view3d" id="btn-floating-view3d">
+        <span>👁️</span> 3D Model
+      </button>
+      <button class="btn-floating-apply" id="btn-floating-apply">
+        <span>💎</span> Apply CAD
+      </button>
     </div>
   </div>
 

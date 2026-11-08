@@ -82,6 +82,7 @@ const state = {
   },
   wireframe: false,
   autoRotate: true,
+  activeAxisTab: 'front',
   currentReconstruction: null
 };
 
@@ -632,8 +633,9 @@ function attachCanvasInteraction(viewKey) {
 
   function getCoords(e) {
     const rect = canvas.getBoundingClientRect();
-    const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX);
-    const clientY = e.clientY ?? (e.touches && e.touches[0]?.clientY);
+    const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    const clientX = touch ? touch.clientX : (e.clientX ?? 0);
+    const clientY = touch ? touch.clientY : (e.clientY ?? 0);
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     return [
@@ -649,7 +651,11 @@ function attachCanvasInteraction(viewKey) {
     if (view.history.length > 30) view.history.shift();
   }
 
-  function findNearestVertex(x, y, maxDist = 14) {
+  function findNearestVertex(x, y, maxDist = null) {
+    const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    if (maxDist === null) {
+      maxDist = isTouch ? 26 : 15;
+    }
     const poly = view.polygon;
     if (!poly || poly.length === 0) return -1;
     let bestDist = maxDist;
@@ -838,29 +844,35 @@ function attachCanvasInteraction(viewKey) {
   canvas.addEventListener('touchstart', (e) => {
     e.preventDefault();
     const touch = e.touches[0];
+    if (!touch) return;
     const mouseEvt = new MouseEvent('mousedown', {
       clientX: touch.clientX,
       clientY: touch.clientY,
       button: 0
     });
     canvas.dispatchEvent(mouseEvt);
-  });
+  }, { passive: false });
 
   canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
     const touch = e.touches[0];
+    if (!touch) return;
     const mouseEvt = new MouseEvent('mousemove', {
       clientX: touch.clientX,
       clientY: touch.clientY
     });
     canvas.dispatchEvent(mouseEvt);
-  });
+  }, { passive: false });
 
   canvas.addEventListener('touchend', (e) => {
     e.preventDefault();
-    const mouseEvt = new MouseEvent('mouseup', {});
+    const touch = e.changedTouches ? e.changedTouches[0] : null;
+    const mouseEvt = new MouseEvent('mouseup', {
+      clientX: touch ? touch.clientX : undefined,
+      clientY: touch ? touch.clientY : undefined
+    });
     canvas.dispatchEvent(mouseEvt);
-  });
+  }, { passive: false });
 }
 
 // ── View Mode Switching & Tool Actions ──────────────────────
@@ -1223,10 +1235,15 @@ export function triggerReconstruction() {
   const statCarats = document.getElementById('stat-carats');
   const statDims = document.getElementById('stat-dims');
   const applyBtn = document.getElementById('btn-apply-cad');
+  const axisCarats = document.getElementById('axis-carats-sub');
+  const floatingCarats = document.getElementById('floating-carats-val');
 
+  const caratsStr = `${carats.toFixed(2)} ct`;
   if (statFaces) statFaces.textContent = `${Math.round(faceCount)} crystal facets`;
   if (statVerts) statVerts.textContent = `${vertexCount} vertices`;
-  if (statCarats) statCarats.textContent = `${carats.toFixed(2)} ct`;
+  if (statCarats) statCarats.textContent = caratsStr;
+  if (axisCarats) axisCarats.textContent = caratsStr;
+  if (floatingCarats) floatingCarats.textContent = caratsStr;
   if (statDims) statDims.textContent = `${dims.width.toFixed(1)} × ${dims.height.toFixed(1)} × ${dims.length.toFixed(1)} mm`;
 
   if (applyBtn) {
@@ -1253,10 +1270,12 @@ export function processViewImage(viewKey, imageElement) {
   view.history = [outline.polygon.map((p) => [...p])];
 
   const badge = document.getElementById(`badge-${viewKey}`);
+  const axisBadge = document.getElementById(`axis-badge-${viewKey}`);
   if (badge) {
     const count = outline.polygon ? (isLoopClosed(outline.polygon) ? outline.polygon.length - 1 : outline.polygon.length) : 0;
     badge.textContent = `✓ ${count} pts`;
     badge.className = 'view-badge active';
+    if (axisBadge) axisBadge.textContent = `${count} pts`;
   }
 
   redrawView(viewKey);
@@ -1582,6 +1601,112 @@ function setupUI() {
 
   const captureBtn = document.getElementById('btn-snap-camera');
   if (captureBtn) captureBtn.addEventListener('click', captureCameraSnapshot);
+
+  // Bind Axis Navigation Tabs
+  document.querySelectorAll('.axis-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const axis = tab.getAttribute('data-axis');
+      if (axis) switchAxisTab(axis);
+    });
+  });
+
+  // Bind Step Navigation Buttons (data-goto)
+  document.querySelectorAll('[data-goto]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const target = btn.getAttribute('data-goto');
+      if (target) switchAxisTab(target);
+    });
+  });
+
+  // Mobile Floating Bar
+  const floating3dBtn = document.getElementById('btn-floating-view3d');
+  if (floating3dBtn) {
+    floating3dBtn.addEventListener('click', () => {
+      if (state.activeAxisTab === 'preview3d' || state.activeAxisTab === '3d') {
+        switchAxisTab('front');
+      } else {
+        switchAxisTab('preview3d');
+      }
+    });
+  }
+
+  const floatingApplyBtn = document.getElementById('btn-floating-apply');
+  if (floatingApplyBtn) {
+    floatingApplyBtn.addEventListener('click', applyToDiamondCAD);
+  }
+
+  window.addEventListener('resize', () => {
+    if (window.innerWidth <= 1024 && state.activeAxisTab === 'all') {
+      switchAxisTab('front');
+    }
+  });
+
+  // Initial tab setup: default to Front view tab for clean, focused display
+  switchAxisTab('front');
+}
+
+// ── Axis Navigation Tab Switcher ────────────────────────────
+
+export function switchAxisTab(axisKey) {
+  state.activeAxisTab = axisKey;
+
+  const isMobile = window.innerWidth <= 1024;
+  const isAll = (axisKey === 'all') && !isMobile;
+  const is3D = (axisKey === 'preview3d' || axisKey === '3d');
+
+  document.body.classList.toggle('tab-view-mode', !isAll);
+  document.body.classList.toggle('showing-3d', is3D);
+
+  // Update top navigation tabs
+  document.querySelectorAll('.axis-tab').forEach((tab) => {
+    const tabAxis = tab.getAttribute('data-axis');
+    const isMatch = (tabAxis === axisKey) || (tabAxis === 'preview3d' && is3D);
+    tab.classList.toggle('active', isMatch);
+  });
+
+  // Toggle active card
+  if (!isAll) {
+    ['front', 'side', 'top'].forEach((k) => {
+      const card = document.getElementById(`card-${k}`);
+      if (card) {
+        card.classList.toggle('active', k === axisKey);
+      }
+    });
+
+    if (axisKey in state.views) {
+      setTimeout(() => redrawView(axisKey), 40);
+    }
+  } else {
+    ['front', 'side', 'top'].forEach((k) => {
+      const card = document.getElementById(`card-${k}`);
+      if (card) card.classList.add('active');
+      redrawView(k);
+    });
+  }
+
+  // Update floating button label
+  const floatingBtn = document.getElementById('btn-floating-view3d');
+  if (floatingBtn) {
+    if (is3D) {
+      floatingBtn.innerHTML = '<span>✏️</span> Outlines';
+    } else {
+      floatingBtn.innerHTML = '<span>👁️</span> 3D Model';
+    }
+  }
+
+  // If 3D view or All views, resize Three.js viewport
+  if (is3D || isAll) {
+    setTimeout(() => {
+      const container = document.getElementById('preview3d-container');
+      if (container && renderer && camera) {
+        const w = container.clientWidth || 360;
+        const h = container.clientHeight || 280;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      }
+    }, 60);
+  }
 }
 
 // ── Initialize ──────────────────────────────────────────────
