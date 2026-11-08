@@ -271,6 +271,129 @@
       font-family: monospace;
     }
 
+    .card-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-icon-header {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      padding: 3px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-icon-header:hover {
+      background: #232a3d;
+      color: #fff;
+    }
+
+    .btn-icon-header.active {
+      background: rgba(0, 255, 200, 0.2);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .mode-tabs {
+      display: flex;
+      background: #111522;
+      border-bottom: 1px solid var(--border-color);
+      padding: 4px 6px;
+      gap: 4px;
+    }
+
+    .mode-tab {
+      flex: 1;
+      padding: 5px 6px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-dim);
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .mode-tab:hover {
+      background: #1b2133;
+      color: #fff;
+    }
+
+    .mode-tab.active {
+      background: rgba(0, 255, 200, 0.15);
+      border-color: rgba(0, 255, 200, 0.45);
+      color: var(--accent);
+    }
+
+    .draw-hint {
+      font-size: 0.73rem;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 5px;
+      padding: 6px 8px;
+      line-height: 1.35;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-mini {
+      padding: 4px 8px;
+      font-size: 0.73rem;
+      font-weight: 500;
+      background: #1e2638;
+      border: 1px solid var(--border-color);
+      color: var(--text-main);
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+
+    .btn-mini:hover {
+      background: #2a354d;
+      border-color: #4a5d85;
+      color: #fff;
+    }
+
+    .btn-mini.danger:hover {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #fca5a5;
+    }
+
+    .btn-mini.primary {
+      background: rgba(0, 255, 200, 0.18);
+      border-color: var(--accent);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .view-card.expanded {
+      grid-column: 1 / -1;
+      border-color: var(--accent);
+      box-shadow: 0 0 25px rgba(0, 255, 200, 0.25);
+    }
+
+    .view-card.expanded .canvas-wrapper {
+      aspect-ratio: 16 / 10;
+      max-height: 480px;
+    }
+
     .guide-tip {
       background: rgba(59, 130, 246, 0.08);
       border: 1px solid rgba(59, 130, 246, 0.25);
@@ -574,7 +697,7 @@
     <div class="views-section">
       <div class="guide-tip">
         <span>💡</span>
-        <span><strong>Tip:</strong> Diamonds are automatically outlined in glowing neon cyan. Adjust the sensitivity slider if you need to fine-tune the contour!</span>
+        <span><strong>Tip:</strong> Use <strong>Auto</strong> to detect the outline, or switch to <strong>✏️ Draw Outline</strong> / <strong>🖐️ Edit Points</strong> to manually click or drag vertices around the exact contour of your stone!</span>
       </div>
 
       <div class="views-grid">
@@ -585,12 +708,25 @@
               <div class="card-title">1. Front View (X-Y)</div>
               <div class="card-subtitle">Direct face-on elevation</div>
             </div>
-            <span class="view-badge" id="badge-front">Ready</span>
+            <div class="card-header-actions">
+              <span class="view-badge" id="badge-front">Ready</span>
+              <button class="btn-icon-header" id="btn-expand-front" title="Toggle Enlarge / Focus View">⛶</button>
+            </div>
           </div>
-          <div class="canvas-wrapper">
+
+          <!-- Mode Selector Tabs -->
+          <div class="mode-tabs">
+            <button class="mode-tab active" id="tab-auto-front" data-view="front" data-mode="auto">🪄 Auto</button>
+            <button class="mode-tab" id="tab-draw-front" data-view="front" data-mode="draw">✏️ Draw</button>
+            <button class="mode-tab" id="tab-edit-front" data-view="front" data-mode="edit">🖐️ Edit</button>
+          </div>
+
+          <div class="canvas-wrapper" id="wrapper-front">
             <canvas id="canvas-front" class="view-canvas" width="400" height="400"></canvas>
           </div>
-          <div class="card-controls">
+
+          <!-- Auto Controls -->
+          <div class="card-controls" id="controls-auto-front">
             <div class="btn-row">
               <input type="file" id="input-front" accept="image/*" style="display: none;">
               <button class="btn-action" id="btn-upload-front">📁 Upload</button>
@@ -603,6 +739,20 @@
               <span class="slider-val" id="val-front">28</span>
             </div>
           </div>
+
+          <!-- Manual Draw / Edit Controls -->
+          <div class="card-controls" id="controls-manual-front" style="display: none;">
+            <div class="draw-hint" id="hint-front">
+              <span>✏️</span>
+              <span id="hint-text-front">Click around perimeter to add points • Click start point to close</span>
+            </div>
+            <div class="btn-row">
+              <button class="btn-mini" id="btn-undo-front" title="Undo last point">↶ Undo</button>
+              <button class="btn-mini primary" id="btn-close-front" title="Close contour loop">✓ Close Loop</button>
+              <button class="btn-mini" id="btn-smooth-front" title="Smooth & snap crystal facets">🧲 Smooth</button>
+              <button class="btn-mini danger" id="btn-clear-front" title="Clear outline points">🗑️ Clear</button>
+            </div>
+          </div>
         </div>
 
         <!-- Card 2: Side View (Z-Y) -->
@@ -612,12 +762,25 @@
               <div class="card-title">2. Side View (Z-Y)</div>
               <div class="card-subtitle">Profile turned 90°</div>
             </div>
-            <span class="view-badge" id="badge-side">Ready</span>
+            <div class="card-header-actions">
+              <span class="view-badge" id="badge-side">Ready</span>
+              <button class="btn-icon-header" id="btn-expand-side" title="Toggle Enlarge / Focus View">⛶</button>
+            </div>
           </div>
-          <div class="canvas-wrapper">
+
+          <!-- Mode Selector Tabs -->
+          <div class="mode-tabs">
+            <button class="mode-tab active" id="tab-auto-side" data-view="side" data-mode="auto">🪄 Auto</button>
+            <button class="mode-tab" id="tab-draw-side" data-view="side" data-mode="draw">✏️ Draw</button>
+            <button class="mode-tab" id="tab-edit-side" data-view="side" data-mode="edit">🖐️ Edit</button>
+          </div>
+
+          <div class="canvas-wrapper" id="wrapper-side">
             <canvas id="canvas-side" class="view-canvas" width="400" height="400"></canvas>
           </div>
-          <div class="card-controls">
+
+          <!-- Auto Controls -->
+          <div class="card-controls" id="controls-auto-side">
             <div class="btn-row">
               <input type="file" id="input-side" accept="image/*" style="display: none;">
               <button class="btn-action" id="btn-upload-side">📁 Upload</button>
@@ -630,6 +793,20 @@
               <span class="slider-val" id="val-side">28</span>
             </div>
           </div>
+
+          <!-- Manual Draw / Edit Controls -->
+          <div class="card-controls" id="controls-manual-side" style="display: none;">
+            <div class="draw-hint" id="hint-side">
+              <span>✏️</span>
+              <span id="hint-text-side">Click around perimeter to add points • Click start point to close</span>
+            </div>
+            <div class="btn-row">
+              <button class="btn-mini" id="btn-undo-side" title="Undo last point">↶ Undo</button>
+              <button class="btn-mini primary" id="btn-close-side" title="Close contour loop">✓ Close Loop</button>
+              <button class="btn-mini" id="btn-smooth-side" title="Smooth & snap crystal facets">🧲 Smooth</button>
+              <button class="btn-mini danger" id="btn-clear-side" title="Clear outline points">🗑️ Clear</button>
+            </div>
+          </div>
         </div>
 
         <!-- Card 3: Top View (X-Z) -->
@@ -639,12 +816,25 @@
               <div class="card-title">3. Top View (X-Z)</div>
               <div class="card-subtitle">Plan view from above</div>
             </div>
-            <span class="view-badge" id="badge-top">Ready</span>
+            <div class="card-header-actions">
+              <span class="view-badge" id="badge-top">Ready</span>
+              <button class="btn-icon-header" id="btn-expand-top" title="Toggle Enlarge / Focus View">⛶</button>
+            </div>
           </div>
-          <div class="canvas-wrapper">
+
+          <!-- Mode Selector Tabs -->
+          <div class="mode-tabs">
+            <button class="mode-tab active" id="tab-auto-top" data-view="top" data-mode="auto">🪄 Auto</button>
+            <button class="mode-tab" id="tab-draw-top" data-view="top" data-mode="draw">✏️ Draw</button>
+            <button class="mode-tab" id="tab-edit-top" data-view="top" data-mode="edit">🖐️ Edit</button>
+          </div>
+
+          <div class="canvas-wrapper" id="wrapper-top">
             <canvas id="canvas-top" class="view-canvas" width="400" height="400"></canvas>
           </div>
-          <div class="card-controls">
+
+          <!-- Auto Controls -->
+          <div class="card-controls" id="controls-auto-top">
             <div class="btn-row">
               <input type="file" id="input-top" accept="image/*" style="display: none;">
               <button class="btn-action" id="btn-upload-top">📁 Upload</button>
@@ -655,6 +845,20 @@
               <span>Threshold:</span>
               <input type="range" id="slider-top" min="5" max="85" value="28">
               <span class="slider-val" id="val-top">28</span>
+            </div>
+          </div>
+
+          <!-- Manual Draw / Edit Controls -->
+          <div class="card-controls" id="controls-manual-top" style="display: none;">
+            <div class="draw-hint" id="hint-top">
+              <span>✏️</span>
+              <span id="hint-text-top">Click around perimeter to add points • Click start point to close</span>
+            </div>
+            <div class="btn-row">
+              <button class="btn-mini" id="btn-undo-top" title="Undo last point">↶ Undo</button>
+              <button class="btn-mini primary" id="btn-close-top" title="Close contour loop">✓ Close Loop</button>
+              <button class="btn-mini" id="btn-smooth-top" title="Smooth & snap crystal facets">🧲 Smooth</button>
+              <button class="btn-mini danger" id="btn-clear-top" title="Clear outline points">🗑️ Clear</button>
             </div>
           </div>
         </div>

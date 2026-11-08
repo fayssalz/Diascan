@@ -2,14 +2,15 @@
    scanner-3axis.js — 3-Axis Rough Diamond Photogrammetry Engine
    Reconstructs a watertight 3D CAD rough diamond mesh from
    3 orthogonal photographic views (Front, Side, Top) with
-   automatic diamond outline detection and neon highlighting.
+   automatic diamond outline detection, manual polygon drawing,
+   and interactive vertex contour editing.
    ============================================================ */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { reconstruct3AxisVisualHull, convexHull2D } from './visualHullMesh.js';
 
-// ── State ───────────────────────────────────────────────────
+// ── Application State ───────────────────────────────────────
 
 const state = {
   views: {
@@ -20,11 +21,18 @@ const state = {
       image: null,
       polygon: null,
       rawPoints: [],
+      mode: 'auto',              // 'auto' | 'draw' | 'edit'
       threshold: 28,
       invert: false,
       canvas: null,
       ctx: null,
-      status: 'Empty'
+      status: 'Empty',
+      history: [],               // Undo stack of polygons
+      draggedPointIndex: null,   // Index of vertex currently dragged
+      hoveredPointIndex: null,   // Index of vertex hovered
+      hoveredEdge: null,         // { index, point: [x,y] }
+      currentMousePos: null,     // [x, y] in 400x400 space
+      isPointerDown: false
     },
     side: {
       id: 'side',
@@ -33,11 +41,18 @@ const state = {
       image: null,
       polygon: null,
       rawPoints: [],
+      mode: 'auto',
       threshold: 28,
       invert: false,
       canvas: null,
       ctx: null,
-      status: 'Empty'
+      status: 'Empty',
+      history: [],
+      draggedPointIndex: null,
+      hoveredPointIndex: null,
+      hoveredEdge: null,
+      currentMousePos: null,
+      isPointerDown: false
     },
     top: {
       id: 'top',
@@ -46,11 +61,18 @@ const state = {
       image: null,
       polygon: null,
       rawPoints: [],
+      mode: 'auto',
       threshold: 28,
       invert: false,
       canvas: null,
       ctx: null,
-      status: 'Empty'
+      status: 'Empty',
+      history: [],
+      draggedPointIndex: null,
+      hoveredPointIndex: null,
+      hoveredEdge: null,
+      currentMousePos: null,
+      isPointerDown: false
     }
   },
   dimensions: {
@@ -137,7 +159,7 @@ function animate() {
   }
 }
 
-// ── Polygon Simplification (Ramer-Douglas-Peucker) ───────────
+// ── Polygon Simplification & Geometry Helpers ───────────────
 
 function ramerDouglasPeucker(points, epsilon) {
   if (!points || points.length <= 2) return points || [];
@@ -171,12 +193,23 @@ function ramerDouglasPeucker(points, epsilon) {
   }
 }
 
-// ── Automatic Diamond Outline Detection & Segmentation ──────
+function isLoopClosed(poly) {
+  if (!poly || poly.length < 3) return false;
+  const first = poly[0];
+  const last = poly[poly.length - 1];
+  return Math.hypot(first[0] - last[0], first[1] - last[1]) < 1e-4;
+}
 
-/**
- * Automatically isolates the rough diamond from the background using
- * edge-border flood fill and multi-channel color/luminance contrast.
- */
+function ensureClosedLoop(poly) {
+  if (!poly || poly.length < 3) return poly;
+  if (!isLoopClosed(poly)) {
+    return [...poly, [...poly[0]]];
+  }
+  return poly;
+}
+
+// ── Automatic Outline Detection ─────────────────────────────
+
 export function detectDiamondOutline(imageElement, options = {}) {
   const threshold = options.threshold ?? 28;
   const invert = options.invert ?? false;
@@ -188,7 +221,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
   canvas.height = targetSize;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  // Fit image inside targetSize x targetSize preserving aspect ratio with centering
   const imgW = imageElement.naturalWidth || imageElement.width || targetSize;
   const imgH = imageElement.naturalHeight || imageElement.height || targetSize;
   const scale = Math.min((targetSize * 0.88) / imgW, (targetSize * 0.88) / imgH);
@@ -206,7 +238,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
   const w = targetSize;
   const h = targetSize;
 
-  // Sample perimeter border (12px band) to determine dominant background color
   let bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
   const borderDepth = 12;
 
@@ -227,7 +258,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
   bgB = bgCount > 0 ? bgB / bgCount : 240;
   const bgLuma = 0.299 * bgR + 0.587 * bgG + 0.114 * bgB;
 
-  // Compute contrast score for every pixel
   const numPixels = w * h;
   const contrast = new Float32Array(numPixels);
 
@@ -242,7 +272,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
     contrast[p] = Math.max(colDist / 4.41, lumaDist / 2.55);
   }
 
-  // Border-seeded flood fill to mark connected background
   const isBackground = new Uint8Array(numPixels);
   const queue = [];
 
@@ -285,7 +314,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
     }
   }
 
-  // Extract foreground boundary points
   const boundaryPoints = [];
   let minX = w, maxX = 0, minY = h, maxY = 0;
 
@@ -296,7 +324,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
       if (invert) fg = !fg;
 
       if (fg) {
-        // Boundary test: at least one neighbor is background
         if (
           isBackground[p - 1] ||
           isBackground[p + 1] ||
@@ -314,7 +341,6 @@ export function detectDiamondOutline(imageElement, options = {}) {
   }
 
   if (boundaryPoints.length < 8) {
-    console.warn('Insufficient diamond outline points detected. Returning default box.');
     const pad = 60;
     const defaultPoly = [
       [w / 2, pad],
@@ -323,153 +349,266 @@ export function detectDiamondOutline(imageElement, options = {}) {
       [pad, h / 2]
     ];
     return {
-      polygon: defaultPoly,
+      polygon: ensureClosedLoop(defaultPoly),
       rawPoints: boundaryPoints,
       bbox: { minX: pad, maxX: w - pad, minY: pad, maxY: h - pad },
-      canvas,
-      imageW: drawW,
-      imageH: drawH,
-      offsetX,
-      offsetY
+      canvas
     };
   }
 
-  // 2D Convex Hull
   const hull = convexHull2D(boundaryPoints);
-
-  // Polygon simplification for clean diamond crystal facets
   const simplified = ramerDouglasPeucker(hull, tolerance);
 
-  // Ensure closed loop
-  if (
-    simplified.length > 2 &&
-    (simplified[0][0] !== simplified[simplified.length - 1][0] ||
-      simplified[0][1] !== simplified[simplified.length - 1][1])
-  ) {
-    simplified.push([...simplified[0]]);
-  }
-
   return {
-    polygon: simplified,
+    polygon: ensureClosedLoop(simplified),
     rawPoints: boundaryPoints,
     bbox: { minX, maxX, minY, maxY },
-    canvas,
-    imageW: drawW,
-    imageH: drawH,
-    offsetX,
-    offsetY
+    canvas
   };
 }
 
-// ── Outline Highlighting & Overlay Rendering ────────────────
+// ── View Canvas Interactive Drawing & Overlay Renderer ──────
 
 /**
- * Draws the photo on targetCanvas with glowing neon outline and translucent diamond tint.
+ * Draws the view's photograph, neon contour lines, translucent body mask,
+ * interactive vertex handles, edge '+' insert indicators, and manual draw lines.
  */
-export function drawHighlightedSilhouette(targetCanvas, imageElement, outlineResult) {
-  if (!targetCanvas) return;
-  const ctx = targetCanvas.getContext('2d');
-  const w = targetCanvas.width;
-  const h = targetCanvas.height;
+export function redrawView(viewKey) {
+  const view = state.views[viewKey];
+  const canvas = document.getElementById(`canvas-${viewKey}`);
+  if (!canvas || !view) return;
+
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
 
   ctx.clearRect(0, 0, w, h);
 
-  if (!imageElement) {
-    // Empty state placeholder
+  if (!view.image) {
     ctx.fillStyle = '#121420';
     ctx.fillRect(0, 0, w, h);
     ctx.strokeStyle = '#252a3d';
     ctx.setLineDash([6, 6]);
-    ctx.strokeRect(12, 12, w - 24, h - 24);
+    ctx.strokeRect(14, 14, w - 28, h - 28);
     ctx.setLineDash([]);
     ctx.fillStyle = '#556080';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('No image uploaded', w / 2, h / 2 - 10);
     ctx.font = '12px sans-serif';
-    ctx.fillText('Drop image or click below', w / 2, h / 2 + 14);
+    ctx.fillText('Upload photo or select test preset', w / 2, h / 2 + 14);
     return;
   }
 
-  // Draw scaled photo
-  const imgW = imageElement.naturalWidth || imageElement.width || w;
-  const imgH = imageElement.naturalHeight || imageElement.height || h;
+  // Draw image
+  const imgW = view.image.naturalWidth || view.image.width || w;
+  const imgH = view.image.naturalHeight || view.image.height || h;
   const scale = Math.min((w * 0.9) / imgW, (h * 0.9) / imgH);
   const dw = imgW * scale;
   const dh = imgH * scale;
   const ox = (w - dw) / 2;
   const oy = (h - dh) / 2;
 
-  // Dark studio backdrop
   ctx.fillStyle = '#10131f';
   ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(view.image, ox, oy, dw, dh);
 
-  // Draw image
-  ctx.drawImage(imageElement, ox, oy, dw, dh);
-
-  const poly = outlineResult?.polygon;
-  if (!poly || poly.length < 3) return;
-
-  // Scale detected polygon to match target canvas viewport
-  const srcCanvas = outlineResult.canvas;
-  const scaleX = w / (srcCanvas?.width || 400);
-  const scaleY = h / (srcCanvas?.height || 400);
+  const poly = view.polygon;
+  const isClosed = isLoopClosed(poly);
 
   ctx.save();
 
-  // 1. Fill detected diamond with translucent luminous cyan/emerald tint
-  ctx.beginPath();
-  ctx.moveTo(poly[0][0] * scaleX, poly[0][1] * scaleY);
-  for (let i = 1; i < poly.length; i++) {
-    ctx.lineTo(poly[i][0] * scaleX, poly[i][1] * scaleY);
-  }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(0, 240, 180, 0.22)';
-  ctx.fill();
-
-  // 2. Wide glowing outer neon stroke
-  ctx.shadowColor = '#00ffc8';
-  ctx.shadowBlur = 14;
-  ctx.strokeStyle = 'rgba(0, 255, 200, 0.65)';
-  ctx.lineWidth = 4;
-  ctx.stroke();
-
-  // 3. Crisp inner neon stroke
-  ctx.shadowBlur = 4;
-  ctx.strokeStyle = '#00ffc8';
-  ctx.lineWidth = 2.2;
-  ctx.stroke();
-
-  // 4. Fine white core outline
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 1.0;
-  ctx.stroke();
-
-  // 5. Draw glowing facet corner vertices
-  for (let i = 0; i < poly.length - 1; i++) {
-    const px = poly[i][0] * scaleX;
-    const py = poly[i][1] * scaleY;
-
-    // Outer glow ring
+  // 1. If closed loop, fill diamond body with translucent cyan mask
+  if (poly && poly.length >= 3 && isClosed) {
     ctx.beginPath();
-    ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+    ctx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(poly[i][0], poly[i][1]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(0, 240, 180, 0.22)';
+    ctx.fill();
+  }
+
+  // 2. Neon stroke around existing path
+  if (poly && poly.length >= 2) {
+    ctx.beginPath();
+    ctx.moveTo(poly[0][0], poly[0][1]);
+    for (let i = 1; i < poly.length; i++) {
+      ctx.lineTo(poly[i][0], poly[i][1]);
+    }
+    if (isClosed) ctx.closePath();
+
+    // Outer neon glow
+    ctx.shadowColor = '#00ffc8';
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = 'rgba(0, 255, 200, 0.7)';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    // Crisp inner stroke
+    ctx.shadowBlur = 4;
+    ctx.strokeStyle = '#00ffc8';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // Sharp core
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+  }
+
+  // 3. In Draw mode, draw dashed guide line to current mouse position
+  if (view.mode === 'draw' && view.currentMousePos && poly && poly.length > 0 && !isClosed) {
+    const last = poly[poly.length - 1];
+    const [mx, my] = view.currentMousePos;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(last[0], last[1]);
+    ctx.lineTo(mx, my);
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = 'rgba(0, 255, 200, 0.85)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+
+    // If mouse is near start point, highlight start point with glowing green ring
+    const distToStart = Math.hypot(mx - poly[0][0], my - poly[0][1]);
+    if (poly.length >= 3 && distToStart < 18) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(poly[0][0], poly[0][1], 12, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 255, 200, 0.35)';
+      ctx.fill();
+      ctx.strokeStyle = '#00ffc8';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Tooltip text
+      ctx.fillStyle = '#00ffc8';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillText('Click to Close', poly[0][0] + 16, poly[0][1] - 8);
+      ctx.restore();
+    }
+  }
+
+  // 4. Render vertex handles
+  if (poly && poly.length > 0) {
+    const numPoints = isClosed ? poly.length - 1 : poly.length;
+
+    for (let i = 0; i < numPoints; i++) {
+      const px = poly[i][0];
+      const py = poly[i][1];
+      const isHovered = view.mode === 'edit' && view.hoveredPointIndex === i;
+      const isDragged = view.mode === 'edit' && view.draggedPointIndex === i;
+      const isStart = i === 0 && view.mode === 'draw';
+
+      ctx.save();
+
+      if (isDragged) {
+        // Dragging vertex
+        ctx.beginPath();
+        ctx.arc(px, py, 9, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 230, 0, 0.4)';
+        ctx.fill();
+        ctx.strokeStyle = '#ffff00';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+      } else if (isHovered) {
+        // Hovered vertex (in edit mode)
+        ctx.beginPath();
+        ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 230, 0, 0.35)';
+        ctx.fill();
+        ctx.strokeStyle = '#ffff00';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+      } else if (isStart) {
+        // First vertex in draw mode
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#00ffc8';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        // Regular vertex
+        ctx.beginPath();
+        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#00ffc8';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  // 5. If hovering over an edge in Edit mode, draw ghost '+' vertex
+  if (view.mode === 'edit' && view.hoveredEdge && view.draggedPointIndex === null) {
+    const [gx, gy] = view.hoveredEdge.point;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(gx, gy, 7, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0, 255, 200, 0.85)';
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#0e111a';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('+', gx, gy);
+
+    // Callout label
+    ctx.fillStyle = 'rgba(10, 16, 26, 0.85)';
+    ctx.strokeStyle = 'rgba(0, 255, 200, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(gx + 12, gy - 12, 105, 18, 4);
+    ctx.fill();
+    ctx.stroke();
     ctx.fillStyle = '#00ffc8';
-    ctx.fill();
-
-    // Inner bright white dot
-    ctx.beginPath();
-    ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-    ctx.fillStyle = '#ffffff';
-    ctx.fill();
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText('Click to add point', gx + 16, gy);
+    ctx.restore();
   }
 
-  // 6. Outline metadata badge overlay
-  const facetCount = Math.max(3, poly.length - 1);
-  const badgeText = `✓ Outline: ${facetCount} facets`;
+  // 6. Corner status badge
+  let badgeText = '';
+  if (view.mode === 'auto') {
+    const count = poly ? (isClosed ? poly.length - 1 : poly.length) : 0;
+    badgeText = `🪄 Auto: ${count} facets`;
+  } else if (view.mode === 'draw') {
+    const count = poly ? poly.length : 0;
+    badgeText = isClosed ? `✓ Outline closed (${poly.length - 1} pts)` : `✏️ Click to add point (${count} placed)`;
+  } else {
+    const count = poly ? (isClosed ? poly.length - 1 : poly.length) : 0;
+    badgeText = `🖐️ Edit: ${count} vertices • Drag points`;
+  }
+
   ctx.font = 'bold 11px sans-serif';
   const textWidth = ctx.measureText(badgeText).width;
-
   ctx.fillStyle = 'rgba(10, 18, 28, 0.85)';
   ctx.strokeStyle = 'rgba(0, 255, 200, 0.5)';
   ctx.lineWidth = 1;
@@ -477,7 +616,6 @@ export function drawHighlightedSilhouette(targetCanvas, imageElement, outlineRes
   ctx.roundRect(10, h - 28, textWidth + 18, 20, 4);
   ctx.fill();
   ctx.stroke();
-
   ctx.fillStyle = '#00ffc8';
   ctx.textAlign = 'left';
   ctx.fillText(badgeText, 18, h - 14);
@@ -485,11 +623,352 @@ export function drawHighlightedSilhouette(targetCanvas, imageElement, outlineRes
   ctx.restore();
 }
 
+// ── Interactive Canvas Event Binding ────────────────────────
+
+function attachCanvasInteraction(viewKey) {
+  const canvas = document.getElementById(`canvas-${viewKey}`);
+  if (!canvas) return;
+  const view = state.views[viewKey];
+
+  function getCoords(e) {
+    const rect = canvas.getBoundingClientRect();
+    const clientX = e.clientX ?? (e.touches && e.touches[0]?.clientX);
+    const clientY = e.clientY ?? (e.touches && e.touches[0]?.clientY);
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return [
+      Math.max(0, Math.min(canvas.width, (clientX - rect.left) * scaleX)),
+      Math.max(0, Math.min(canvas.height, (clientY - rect.top) * scaleY))
+    ];
+  }
+
+  function pushHistory() {
+    if (!view.polygon) return;
+    if (!view.history) view.history = [];
+    view.history.push(view.polygon.map((p) => [...p]));
+    if (view.history.length > 30) view.history.shift();
+  }
+
+  function findNearestVertex(x, y, maxDist = 14) {
+    const poly = view.polygon;
+    if (!poly || poly.length === 0) return -1;
+    let bestDist = maxDist;
+    let bestIdx = -1;
+    const n = isLoopClosed(poly) ? poly.length - 1 : poly.length;
+    for (let i = 0; i < n; i++) {
+      const d = Math.hypot(x - poly[i][0], y - poly[i][1]);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  function findNearestEdge(x, y, maxDist = 10) {
+    const poly = view.polygon;
+    if (!poly || poly.length < 2) return null;
+    let bestDist = maxDist;
+    let bestEdge = null;
+    const n = isLoopClosed(poly) ? poly.length - 1 : poly.length;
+
+    for (let i = 0; i < n; i++) {
+      const p1 = poly[i];
+      const p2 = poly[(i + 1) % poly.length];
+      const dx = p2[0] - p1[0];
+      const dy = p2[1] - p1[1];
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq < 1e-4) continue;
+
+      const t = ((x - p1[0]) * dx + (y - p1[1]) * dy) / lenSq;
+      if (t >= 0.08 && t <= 0.92) {
+        const projX = p1[0] + t * dx;
+        const projY = p1[1] + t * dy;
+        const d = Math.hypot(x - projX, y - projY);
+        if (d < bestDist) {
+          bestDist = d;
+          bestEdge = { index: i, point: [projX, projY] };
+        }
+      }
+    }
+    return bestEdge;
+  }
+
+  // Right-click to delete vertex
+  canvas.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    if (view.mode === 'edit' || view.mode === 'draw') {
+      const [x, y] = getCoords(e);
+      const idx = findNearestVertex(x, y, 16);
+      if (idx !== -1 && view.polygon.length > 4) {
+        pushHistory();
+        view.polygon.splice(idx, 1);
+        if (isLoopClosed(view.polygon)) {
+          view.polygon[view.polygon.length - 1] = [...view.polygon[0]];
+        }
+        redrawView(viewKey);
+        triggerReconstruction();
+      }
+    }
+  });
+
+  // Mousedown
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 2) return;
+    view.isPointerDown = true;
+    const [x, y] = getCoords(e);
+
+    if (view.mode === 'draw') {
+      if (!view.polygon) view.polygon = [];
+
+      // If clicking near start vertex, close the loop!
+      if (view.polygon.length >= 3 && Math.hypot(x - view.polygon[0][0], y - view.polygon[0][1]) < 18) {
+        pushHistory();
+        view.polygon.push([...view.polygon[0]]);
+        setMode(viewKey, 'edit');
+        redrawView(viewKey);
+        triggerReconstruction();
+        return;
+      }
+
+      pushHistory();
+      view.polygon.push([x, y]);
+      redrawView(viewKey);
+      if (isLoopClosed(view.polygon)) {
+        triggerReconstruction();
+      }
+    } else if (view.mode === 'edit') {
+      // Check if clicking existing vertex
+      const vIdx = findNearestVertex(x, y, 16);
+      if (vIdx !== -1) {
+        pushHistory();
+        view.draggedPointIndex = vIdx;
+        canvas.style.cursor = 'grabbing';
+        redrawView(viewKey);
+        return;
+      }
+
+      // Check if clicking near edge -> insert new vertex
+      const edge = findNearestEdge(x, y, 12);
+      if (edge) {
+        pushHistory();
+        view.polygon.splice(edge.index + 1, 0, [x, y]);
+        view.draggedPointIndex = edge.index + 1;
+        canvas.style.cursor = 'grabbing';
+        redrawView(viewKey);
+        triggerReconstruction();
+        return;
+      }
+    }
+  });
+
+  // Mousemove
+  canvas.addEventListener('mousemove', (e) => {
+    const [x, y] = getCoords(e);
+    view.currentMousePos = [x, y];
+
+    if (view.mode === 'draw') {
+      canvas.style.cursor = 'crosshair';
+      if (view.isPointerDown) {
+        // Freehand lasso drag
+        const last = view.polygon[view.polygon.length - 1];
+        if (!last || Math.hypot(x - last[0], y - last[1]) > 9) {
+          view.polygon.push([x, y]);
+          redrawView(viewKey);
+        }
+      } else {
+        redrawView(viewKey);
+      }
+    } else if (view.mode === 'edit') {
+      if (view.draggedPointIndex !== null) {
+        canvas.style.cursor = 'grabbing';
+        view.polygon[view.draggedPointIndex] = [x, y];
+        if (view.draggedPointIndex === 0 && isLoopClosed(view.polygon)) {
+          view.polygon[view.polygon.length - 1] = [x, y];
+        }
+        redrawView(viewKey);
+        triggerReconstruction();
+      } else {
+        const vIdx = findNearestVertex(x, y, 14);
+        if (vIdx !== -1) {
+          view.hoveredPointIndex = vIdx;
+          view.hoveredEdge = null;
+          canvas.style.cursor = 'grab';
+        } else {
+          view.hoveredPointIndex = null;
+          const edge = findNearestEdge(x, y, 10);
+          view.hoveredEdge = edge;
+          canvas.style.cursor = edge ? 'copy' : 'default';
+        }
+        redrawView(viewKey);
+      }
+    }
+  });
+
+  // Mouseup / Mouseleave
+  const handlePointerUp = () => {
+    view.isPointerDown = false;
+
+    if (view.mode === 'draw') {
+      // If user drew freehand lasso with >= 6 points and released mouse, close it!
+      if (view.polygon && view.polygon.length >= 6 && !isLoopClosed(view.polygon)) {
+        view.polygon.push([...view.polygon[0]]);
+        setMode(viewKey, 'edit');
+        triggerReconstruction();
+      }
+    } else if (view.mode === 'edit') {
+      if (view.draggedPointIndex !== null) {
+        view.draggedPointIndex = null;
+        triggerReconstruction();
+      }
+      canvas.style.cursor = view.hoveredPointIndex !== null ? 'grab' : (view.hoveredEdge ? 'copy' : 'default');
+      redrawView(viewKey);
+    }
+  };
+
+  canvas.addEventListener('mouseup', handlePointerUp);
+  canvas.addEventListener('mouseleave', () => {
+    view.currentMousePos = null;
+    view.hoveredPointIndex = null;
+    view.hoveredEdge = null;
+    handlePointerUp();
+  });
+
+  // Touch support for tablets / touchscreen
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const mouseEvt = new MouseEvent('mousedown', {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      button: 0
+    });
+    canvas.dispatchEvent(mouseEvt);
+  });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const touch = e.touches[0];
+    const mouseEvt = new MouseEvent('mousemove', {
+      clientX: touch.clientX,
+      clientY: touch.clientY
+    });
+    canvas.dispatchEvent(mouseEvt);
+  });
+
+  canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    const mouseEvt = new MouseEvent('mouseup', {});
+    canvas.dispatchEvent(mouseEvt);
+  });
+}
+
+// ── View Mode Switching & Tool Actions ──────────────────────
+
+export function setMode(viewKey, mode) {
+  const view = state.views[viewKey];
+  if (!view) return;
+
+  view.mode = mode;
+
+  // Update mode tabs
+  ['auto', 'draw', 'edit'].forEach((m) => {
+    const tab = document.getElementById(`tab-${m}-${viewKey}`);
+    if (tab) tab.classList.toggle('active', m === mode);
+  });
+
+  // Toggle control panels
+  const autoControls = document.getElementById(`controls-auto-${viewKey}`);
+  const manualControls = document.getElementById(`controls-manual-${viewKey}`);
+  const hintText = document.getElementById(`hint-text-${viewKey}`);
+
+  if (autoControls) autoControls.style.display = mode === 'auto' ? 'flex' : 'none';
+  if (manualControls) manualControls.style.display = mode !== 'auto' ? 'flex' : 'none';
+
+  if (hintText) {
+    if (mode === 'draw') {
+      hintText.textContent = 'Click around perimeter to add points • Click start point to close • Drag to trace';
+    } else if (mode === 'edit') {
+      hintText.textContent = 'Drag points to tweak • Click line to add (+) • Right-click to delete';
+    }
+  }
+
+  // Update canvas cursor
+  const canvas = document.getElementById(`canvas-${viewKey}`);
+  if (canvas) {
+    canvas.style.cursor = mode === 'draw' ? 'crosshair' : (mode === 'edit' ? 'grab' : 'default');
+  }
+
+  redrawView(viewKey);
+}
+
+export function undoView(viewKey) {
+  const view = state.views[viewKey];
+  if (!view || !view.history || view.history.length === 0) return;
+
+  view.polygon = view.history.pop();
+  redrawView(viewKey);
+  triggerReconstruction();
+}
+
+export function closeViewLoop(viewKey) {
+  const view = state.views[viewKey];
+  if (!view || !view.polygon || view.polygon.length < 3) return;
+
+  if (!view.history) view.history = [];
+  view.history.push(view.polygon.map((p) => [...p]));
+
+  view.polygon = ensureClosedLoop(view.polygon);
+  setMode(viewKey, 'edit');
+  redrawView(viewKey);
+  triggerReconstruction();
+}
+
+export function smoothViewContour(viewKey) {
+  const view = state.views[viewKey];
+  if (!view || !view.polygon || view.polygon.length < 4) return;
+
+  if (!view.history) view.history = [];
+  view.history.push(view.polygon.map((p) => [...p]));
+
+  // Snaps/smooths the hand-drawn points to clean planar crystal facets
+  const hull = convexHull2D(view.polygon);
+  const simplified = ramerDouglasPeucker(hull, 2.5);
+  view.polygon = ensureClosedLoop(simplified);
+
+  redrawView(viewKey);
+  triggerReconstruction();
+}
+
+export function clearViewOutline(viewKey) {
+  const view = state.views[viewKey];
+  if (!view) return;
+
+  if (view.polygon && view.polygon.length > 0) {
+    if (!view.history) view.history = [];
+    view.history.push(view.polygon.map((p) => [...p]));
+  }
+
+  view.polygon = [];
+  setMode(viewKey, 'draw');
+  redrawView(viewKey);
+  triggerReconstruction();
+}
+
+export function toggleExpandCard(viewKey) {
+  const card = document.getElementById(`card-${viewKey}`);
+  const btn = document.getElementById(`btn-expand-${viewKey}`);
+  if (!card) return;
+
+  const isExpanded = card.classList.toggle('expanded');
+  if (btn) btn.classList.toggle('active', isExpanded);
+
+  // Redraw canvas with updated bounds
+  setTimeout(() => redrawView(viewKey), 100);
+}
+
 // ── Synthetic Diamond Sample Presets ────────────────────────
 
-/**
- * Creates high-fidelity realistic rough diamond images for immediate 1-click testing.
- */
 export function generateSampleDiamondViews(preset = 'octahedron') {
   const size = 400;
 
@@ -499,7 +978,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     c.height = size;
     const ctx = c.getContext('2d');
 
-    // Realistic gradient photography background (clean jeweler white-to-gray paper)
     const bg = ctx.createRadialGradient(size / 2, size / 2, 40, size / 2, size / 2, size / 1.3);
     bg.addColorStop(0, '#f2f4f8');
     bg.addColorStop(0.7, '#e2e6f0');
@@ -507,7 +985,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, size, size);
 
-    // Subtle soft contact drop shadow underneath
     ctx.save();
     const shadow = ctx.createRadialGradient(size / 2, size / 2 + 105, 10, size / 2, size / 2 + 105, 120);
     shadow.addColorStop(0, 'rgba(30, 40, 60, 0.45)');
@@ -523,7 +1000,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     return c;
   }
 
-  // Helper to draw faceted rough crystal polygon with shading & trigons
   function drawDiamondPolygon(ctx, vertices, facetColor = '#7ca8c4', highlightColor = '#edf5fa') {
     ctx.save();
     ctx.beginPath();
@@ -533,7 +1009,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     }
     ctx.closePath();
 
-    // Realistic diamond body gradient
     const grad = ctx.createLinearGradient(size / 2 - 80, size / 2 - 100, size / 2 + 80, size / 2 + 100);
     grad.addColorStop(0, highlightColor);
     grad.addColorStop(0.3, facetColor);
@@ -542,12 +1017,10 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Internal crystal facet lines
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
-    // Crystal facet ridges
     const cx = size / 2;
     const cy = size / 2;
     for (let i = 0; i < vertices.length; i += 2) {
@@ -558,7 +1031,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
       ctx.stroke();
     }
 
-    // Natural rough diamond surface luster & trigons
     ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
     ctx.beginPath();
     ctx.moveTo(cx - 20, cy - 20);
@@ -571,9 +1043,7 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
   }
 
   if (preset === 'macle') {
-    // Macle Twin Rough: Flat triangular twinned diamond
     const front = createViewCanvas((ctx) => {
-      // Triangle with re-entrant twin notch
       const poly = [
         [size / 2, 80],
         [320, 290],
@@ -586,7 +1056,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     });
 
     const side = createViewCanvas((ctx) => {
-      // Thin twinned plate profile
       const poly = [
         [size / 2, 85],
         [size / 2 + 45, 180],
@@ -598,7 +1067,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     });
 
     const top = createViewCanvas((ctx) => {
-      // Broad triangular plan view
       const poly = [
         [size / 2, 90],
         [315, 300],
@@ -609,7 +1077,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
 
     return { front, side, top, dims: { height: 4.2, width: 6.8, length: 6.5 } };
   } else if (preset === 'makeable') {
-    // Alluvial Makeable: Organic, slightly asymmetric natural river rough
     const front = createViewCanvas((ctx) => {
       const poly = [
         [190, 75],
@@ -652,9 +1119,7 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
 
     return { front, side, top, dims: { height: 6.2, width: 5.6, length: 5.2 } };
   } else {
-    // Classic Natural Octahedral Crystal
     const front = createViewCanvas((ctx) => {
-      // Classic bipyramid profile with slight chamfer
       const poly = [
         [size / 2, 70],
         [305, 185],
@@ -667,7 +1132,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     });
 
     const side = createViewCanvas((ctx) => {
-      // Orthogonal side bipyramid profile
       const poly = [
         [size / 2, 75],
         [300, 190],
@@ -680,7 +1144,6 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
     });
 
     const top = createViewCanvas((ctx) => {
-      // Square crystal cross-section with beveled dodecahedral edges
       const poly = [
         [size / 2, 85],
         [295, 105],
@@ -702,21 +1165,24 @@ export function generateSampleDiamondViews(preset = 'octahedron') {
 
 export function triggerReconstruction() {
   const v = state.views;
-  if (!v.front.polygon && !v.side.polygon && !v.top.polygon) {
-    console.warn('No polygons available for reconstruction.');
+
+  // Filter closed or valid polygons
+  const frontPoly = v.front.polygon && v.front.polygon.length >= 3 ? v.front.polygon : null;
+  const sidePoly = v.side.polygon && v.side.polygon.length >= 3 ? v.side.polygon : null;
+  const topPoly = v.top.polygon && v.top.polygon.length >= 3 ? v.top.polygon : null;
+
+  if (!frontPoly && !sidePoly && !topPoly) {
     return;
   }
 
-  // Ensure all 3 views have polygons (fallback to existing view if missing)
-  const frontPoly = v.front.polygon || v.side.polygon || v.top.polygon;
-  const sidePoly = v.side.polygon || v.front.polygon || v.top.polygon;
-  const topPoly = v.top.polygon || v.front.polygon || v.side.polygon;
+  const effectiveFront = frontPoly || sidePoly || topPoly;
+  const effectiveSide = sidePoly || frontPoly || topPoly;
+  const effectiveTop = topPoly || frontPoly || sidePoly;
 
   const dims = state.dimensions;
-  const result = reconstruct3AxisVisualHull(frontPoly, sidePoly, topPoly, dims);
+  const result = reconstruct3AxisVisualHull(effectiveFront, effectiveSide, effectiveTop, dims);
 
   if (!result || !result.geometry) {
-    console.error('Reconstruction failed to produce geometry.');
     return;
   }
 
@@ -741,21 +1207,17 @@ export function triggerReconstruction() {
   previewMesh = new THREE.Mesh(result.geometry, mat);
   scene.add(previewMesh);
 
-  // Position grid beneath the reconstructed stone
   result.geometry.computeBoundingBox();
   const box = result.geometry.boundingBox;
   if (box && gridHelper) {
     gridHelper.position.y = box.min.y - 0.5;
   }
 
-  // Calculate stats
   const vertexCount = result.geometry.attributes.position.count;
   const faceCount = result.geometry.index ? result.geometry.index.count / 3 : vertexCount / 3;
   const volumeMm3 = result.volume || (dims.width * dims.height * dims.length * 0.45);
-  // Diamond density ~3.52 g/cm3 => 3.52 mg/mm3. 1 carat = 200 mg.
   const carats = volumeMm3 * 3.52 * 0.005;
 
-  // Update UI Stats
   const statFaces = document.getElementById('stat-faces');
   const statVerts = document.getElementById('stat-verts');
   const statCarats = document.getElementById('stat-carats');
@@ -773,7 +1235,7 @@ export function triggerReconstruction() {
   }
 }
 
-// ── Image Loading & View Processing ─────────────────────────
+// ── Image Loading & Processing ──────────────────────────────
 
 export function processViewImage(viewKey, imageElement) {
   const view = state.views[viewKey];
@@ -788,22 +1250,16 @@ export function processViewImage(viewKey, imageElement) {
   view.polygon = outline.polygon;
   view.rawPoints = outline.rawPoints;
   view.status = 'Ready';
+  view.history = [outline.polygon.map((p) => [...p])];
 
-  // Render highlighted outline onto slot canvas
-  const canvas = document.getElementById(`canvas-${viewKey}`);
-  if (canvas) {
-    drawHighlightedSilhouette(canvas, imageElement, outline);
-  }
-
-  // Update status badge in card
   const badge = document.getElementById(`badge-${viewKey}`);
   if (badge) {
-    const count = outline.polygon ? outline.polygon.length - 1 : 0;
-    badge.textContent = `✓ Detected: ${count} pts`;
+    const count = outline.polygon ? (isLoopClosed(outline.polygon) ? outline.polygon.length - 1 : outline.polygon.length) : 0;
+    badge.textContent = `✓ ${count} pts`;
     badge.className = 'view-badge active';
   }
 
-  // Automatically trigger 3D reconstruction
+  redrawView(viewKey);
   triggerReconstruction();
 }
 
@@ -813,12 +1269,10 @@ export function loadSamplePreset(presetKey) {
     Object.assign(state.dimensions, sample.dims);
   }
 
-  // Process all 3 views
   processViewImage('front', sample.front);
   processViewImage('side', sample.side);
   processViewImage('top', sample.top);
 
-  // Update dimension inputs if present
   const dimH = document.getElementById('dim-height');
   const dimW = document.getElementById('dim-width');
   const dimL = document.getElementById('dim-length');
@@ -895,7 +1349,6 @@ function applyToDiamondCAD() {
   const indices = exportGeom.index ? Array.from(exportGeom.index.array) : null;
   const serialized = { positions, indices };
 
-  // Save to localStorage for persistence
   try {
     localStorage.setItem('scanned_rough_geometry', JSON.stringify(serialized));
     console.log('3-Axis rough diamond saved to localStorage.');
@@ -963,6 +1416,40 @@ function setupUI() {
 
   // Setup View Cards (Front, Side, Top)
   ['front', 'side', 'top'].forEach((key) => {
+    // Mode tabs
+    ['auto', 'draw', 'edit'].forEach((mode) => {
+      const tab = document.getElementById(`tab-${mode}-${key}`);
+      if (tab) {
+        tab.addEventListener('click', () => {
+          if (mode === 'auto' && state.views[key].image) {
+            // Re-detect with auto
+            processViewImage(key, state.views[key].image);
+          }
+          setMode(key, mode);
+        });
+      }
+    });
+
+    // Expand toggle
+    const expandBtn = document.getElementById(`btn-expand-${key}`);
+    if (expandBtn) {
+      expandBtn.addEventListener('click', () => toggleExpandCard(key));
+    }
+
+    // Manual Tool Buttons
+    const undoBtn = document.getElementById(`btn-undo-${key}`);
+    if (undoBtn) undoBtn.addEventListener('click', () => undoView(key));
+
+    const closeBtn = document.getElementById(`btn-close-${key}`);
+    if (closeBtn) closeBtn.addEventListener('click', () => closeViewLoop(key));
+
+    const smoothBtn = document.getElementById(`btn-smooth-${key}`);
+    if (smoothBtn) smoothBtn.addEventListener('click', () => smoothViewContour(key));
+
+    const clearBtn = document.getElementById(`btn-clear-${key}`);
+    if (clearBtn) clearBtn.addEventListener('click', () => clearViewOutline(key));
+
+    // Upload & Camera
     const fileInput = document.getElementById(`input-${key}`);
     const uploadBtn = document.getElementById(`btn-upload-${key}`);
     const cameraBtn = document.getElementById(`btn-cam-${key}`);
@@ -1026,7 +1513,7 @@ function setupUI() {
         const valLabel = document.getElementById(`val-${key}`);
         if (valLabel) valLabel.textContent = val;
 
-        if (state.views[key].image) {
+        if (state.views[key].image && state.views[key].mode === 'auto') {
           processViewImage(key, state.views[key].image);
         }
       });
@@ -1037,11 +1524,14 @@ function setupUI() {
       invertBtn.addEventListener('click', () => {
         state.views[key].invert = !state.views[key].invert;
         invertBtn.classList.toggle('active', state.views[key].invert);
-        if (state.views[key].image) {
+        if (state.views[key].image && state.views[key].mode === 'auto') {
           processViewImage(key, state.views[key].image);
         }
       });
     }
+
+    // Attach interactive drawing/editing to canvas
+    attachCanvasInteraction(key);
   });
 
   // Dimension inputs
@@ -1099,6 +1589,5 @@ function setupUI() {
 document.addEventListener('DOMContentLoaded', () => {
   init3DPreview();
   setupUI();
-  // Pre-load default natural octahedral rough crystal
   loadSamplePreset('octahedron');
 });
