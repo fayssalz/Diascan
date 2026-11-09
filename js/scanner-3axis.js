@@ -514,40 +514,73 @@ export function redrawView(viewKey) {
       const py = poly[i][1];
       const isHovered = view.mode === 'edit' && view.hoveredPointIndex === i;
       const isDragged = view.mode === 'edit' && view.draggedPointIndex === i;
-      const isStart = i === 0 && view.mode === 'draw';
+      const isStart = i === 0 && (view.mode === 'draw' || view.mode === 'hole');
 
       ctx.save();
 
-      if (isDragged || isHovered) {
+      if (isDragged) {
+        // High visibility touch & stylus drag halo (keeps point visible under fingertip / S-Pen)
         ctx.beginPath();
-        ctx.arc(px, py, 8, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 230, 0, 0.4)';
+        ctx.arc(px, py, 20, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 230, 0, 0.25)';
+        ctx.fill();
+        ctx.strokeStyle = '#ffff00';
+        ctx.lineWidth = 3;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.arc(px, py, 7, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffff00';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#0e111a';
+        ctx.fill();
+      } else if (isHovered) {
+        ctx.beginPath();
+        ctx.arc(px, py, 14, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 230, 0, 0.3)';
         ctx.fill();
         ctx.strokeStyle = '#ffff00';
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
         ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
         ctx.fillStyle = '#ffffff';
         ctx.fill();
       } else if (isStart) {
         ctx.beginPath();
-        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.arc(px, py, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#00ffc8';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      } else {
+        // Regular vertex with clear touch handle
+        ctx.beginPath();
+        ctx.arc(px, py, 5.5, 0, Math.PI * 2);
         ctx.fillStyle = '#00ffc8';
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 2;
         ctx.stroke();
-      } else {
-        ctx.beginPath();
-        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#00ffc8';
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff';
-        ctx.fill();
+
+        if (view.mode === 'edit') {
+          // Touch target ring in edit mode
+          ctx.beginPath();
+          ctx.arc(px, py, 14, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(0, 255, 200, 0.35)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
       }
 
       ctx.restore();
@@ -702,22 +735,70 @@ export function redrawTrimetricView() {
   }
 }
 
-// ── Interactive Canvas Event Handlers ───────────────────────
+// ── Coordinate Mapping with Subpixel & Letterbox Correction ──
+
+export function getCanvasCoords(e, canvas) {
+  const rect = canvas.getBoundingClientRect();
+
+  // Extract clientX, clientY from PointerEvent, MouseEvent, or TouchEvent
+  let clientX = e.clientX;
+  let clientY = e.clientY;
+
+  if (clientX === undefined) {
+    if (e.touches && e.touches.length > 0) {
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
+    } else if (e.changedTouches && e.changedTouches.length > 0) {
+      clientX = e.changedTouches[0].clientX;
+      clientY = e.changedTouches[0].clientY;
+    } else {
+      clientX = 0;
+      clientY = 0;
+    }
+  }
+
+  const canvasW = canvas.width;
+  const canvasH = canvas.height;
+  const canvasAspect = canvasW / canvasH;
+  const rectAspect = rect.width / rect.height;
+
+  let renderedW = rect.width;
+  let renderedH = rect.height;
+  let offsetX = 0;
+  let offsetY = 0;
+
+  // Account for any CSS letterboxing or padding so cursor coordinates match bitmap EXACTLY:
+  if (Math.abs(rectAspect - canvasAspect) > 0.005) {
+    if (rectAspect > canvasAspect) {
+      renderedW = rect.height * canvasAspect;
+      offsetX = (rect.width - renderedW) / 2;
+    } else {
+      renderedH = rect.width / canvasAspect;
+      offsetY = (rect.height - renderedH) / 2;
+    }
+  }
+
+  const relX = clientX - (rect.left + offsetX);
+  const relY = clientY - (rect.top + offsetY);
+
+  const scaleX = canvasW / renderedW;
+  const scaleY = canvasH / renderedH;
+
+  const x = Math.round(relX * scaleX);
+  const y = Math.round(relY * scaleY);
+
+  return [
+    Math.max(0, Math.min(canvasW, x)),
+    Math.max(0, Math.min(canvasH, y))
+  ];
+}
+
+// ── Interactive Canvas Event Handlers (Mouse, Touch, S-Pen) ──
 
 function attachCanvasInteraction(viewKey) {
   const canvas = document.getElementById(`canvas-${viewKey}`);
   const view = state.views[viewKey];
   if (!canvas || !view) return;
-
-  function getCanvasCoords(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return [
-      Math.round((e.clientX - rect.left) * scaleX),
-      Math.round((e.clientY - rect.top) * scaleY)
-    ];
-  }
 
   function getActivePoints() {
     if (view.mode === 'hole') {
@@ -737,9 +818,11 @@ function attachCanvasInteraction(viewKey) {
     }
   }
 
-  function findNearestVertex(x, y, maxDist = 14) {
+  function findNearestVertex(x, y, isCoarse = false) {
     const poly = getActivePoints();
-    if (!poly) return -1;
+    if (!poly || poly.length === 0) return -1;
+    // Generous touch target for Samsung S23 Ultra / S-Pen / touch (38 canvas units ~= 20-24 screen px)
+    const maxDist = isCoarse ? 38 : 18;
     let bestDist = maxDist;
     let bestIdx = -1;
     for (let i = 0; i < poly.length; i++) {
@@ -752,9 +835,10 @@ function attachCanvasInteraction(viewKey) {
     return bestIdx;
   }
 
-  function findNearestEdge(x, y, maxDist = 12) {
+  function findNearestEdge(x, y, isCoarse = false) {
     const poly = getActivePoints();
     if (!poly || poly.length < 2) return null;
+    const maxDist = isCoarse ? 28 : 14;
     let bestDist = maxDist;
     let bestEdge = null;
     const count = isLoopClosed(poly) ? poly.length - 1 : poly.length - 1;
@@ -781,16 +865,28 @@ function attachCanvasInteraction(viewKey) {
     return bestEdge;
   }
 
-  // Mouse Down
-  canvas.addEventListener('mousedown', (e) => {
-    const [x, y] = getCanvasCoords(e);
-    view.isPointerDown = true;
+  let longPressTimer = null;
+  let activePointerId = null;
 
+  function onPointerDown(e) {
+    // Only accept primary button (left click, touch, stylus tip) or secondary button
+    if (e.button !== undefined && e.button !== 0 && e.button !== 2) return;
+    e.preventDefault();
+
+    activePointerId = e.pointerId;
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    const isCoarse = (e.pointerType === 'touch' || e.pointerType === 'pen' || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches));
+    const [x, y] = getCanvasCoords(e, canvas);
+    view.isPointerDown = true;
+    view.currentMousePos = [x, y];
+
+    // Right-click or S-Pen stylus button 2: delete vertex
     if (e.button === 2) {
-      // Right click to delete vertex in edit mode
-      e.preventDefault();
       if (view.mode === 'edit') {
-        const vIdx = findNearestVertex(x, y, 16);
+        const vIdx = findNearestVertex(x, y, isCoarse);
         const poly = getActivePoints();
         if (vIdx !== -1 && poly && poly.length > 3) {
           if (!view.history) view.history = [];
@@ -817,7 +913,8 @@ function attachCanvasInteraction(viewKey) {
       view.history.push(poly.map(p => [...p]));
 
       // If clicked near first point and polygon >= 3, close loop!
-      if (poly.length >= 3 && Math.hypot(poly[0][0] - x, poly[0][1] - y) < 18) {
+      const closeDist = isCoarse ? 44 : 24;
+      if (poly.length >= 3 && Math.hypot(poly[0][0] - x, poly[0][1] - y) < closeDist) {
         poly.push([...poly[0]]);
         setMode(viewKey, 'edit');
         triggerReconstruction();
@@ -827,39 +924,61 @@ function attachCanvasInteraction(viewKey) {
       poly.push([x, y]);
       redrawView(viewKey);
     } else if (view.mode === 'edit') {
-      const vIdx = findNearestVertex(x, y, 14);
+      const vIdx = findNearestVertex(x, y, isCoarse);
       if (vIdx !== -1) {
         view.draggedPointIndex = vIdx;
+        view.hoveredPointIndex = vIdx;
         const poly = getActivePoints();
         if (!view.history) view.history = [];
         view.history.push(poly.map(p => [...p]));
+
+        // Long press (600ms hold) to delete vertex on touch / S-Pen without right click
+        if (isCoarse) {
+          clearTimeout(longPressTimer);
+          longPressTimer = setTimeout(() => {
+            if (view.isPointerDown && view.draggedPointIndex === vIdx) {
+              const curPoly = getActivePoints();
+              if (curPoly && curPoly.length > 3) {
+                curPoly.splice(vIdx, 1);
+                if (isLoopClosed(curPoly)) {
+                  curPoly[curPoly.length - 1] = [...curPoly[0]];
+                }
+                view.draggedPointIndex = null;
+                redrawView(viewKey);
+                triggerReconstruction();
+              }
+            }
+          }, 650);
+        }
+
+        redrawView(viewKey);
       } else {
-        const edge = findNearestEdge(x, y, 12);
+        const edge = findNearestEdge(x, y, isCoarse);
         if (edge) {
           const poly = getActivePoints();
           if (!view.history) view.history = [];
           view.history.push(poly.map(p => [...p]));
           poly.splice(edge.index, 0, edge.point);
           view.draggedPointIndex = edge.index;
+          view.hoveredPointIndex = edge.index;
           redrawView(viewKey);
           triggerReconstruction();
         }
       }
     }
-  });
+  }
 
-  // Context menu prevention
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-
-  // Mouse Move
-  canvas.addEventListener('mousemove', (e) => {
-    const [x, y] = getCanvasCoords(e);
+  function onPointerMove(e) {
+    e.preventDefault();
+    const isCoarse = (e.pointerType === 'touch' || e.pointerType === 'pen' || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches));
+    const [x, y] = getCanvasCoords(e, canvas);
     view.currentMousePos = [x, y];
 
     if (view.mode === 'draw' || view.mode === 'hole') {
       redrawView(viewKey);
     } else if (view.mode === 'edit') {
       if (view.draggedPointIndex !== null) {
+        clearTimeout(longPressTimer); // Moving cancels long press delete
         const poly = getActivePoints();
         if (poly && poly[view.draggedPointIndex]) {
           poly[view.draggedPointIndex] = [x, y];
@@ -871,52 +990,54 @@ function attachCanvasInteraction(viewKey) {
           redrawView(viewKey);
         }
       } else {
-        const vIdx = findNearestVertex(x, y, 14);
+        const vIdx = findNearestVertex(x, y, isCoarse);
         if (vIdx !== -1) {
           view.hoveredPointIndex = vIdx;
           view.hoveredEdge = null;
           canvas.style.cursor = 'grab';
         } else {
           view.hoveredPointIndex = null;
-          const edge = findNearestEdge(x, y, 12);
+          const edge = findNearestEdge(x, y, isCoarse);
           view.hoveredEdge = edge;
           canvas.style.cursor = edge ? 'copy' : 'default';
         }
         redrawView(viewKey);
       }
     }
-  });
+  }
 
-  // Mouse Up
-  const handlePointerUp = () => {
+  function onPointerUp(e) {
+    clearTimeout(longPressTimer);
     view.isPointerDown = false;
+    if (activePointerId !== null) {
+      try {
+        canvas.releasePointerCapture(activePointerId);
+      } catch (_) {}
+      activePointerId = null;
+    }
+
     if (view.mode === 'edit' && view.draggedPointIndex !== null) {
       view.draggedPointIndex = null;
       triggerReconstruction();
       redrawView(viewKey);
     }
-  };
+  }
 
-  canvas.addEventListener('mouseup', handlePointerUp);
-  canvas.addEventListener('mouseleave', () => {
-    view.currentMousePos = null;
-    handlePointerUp();
-  });
+  // Pointer Events (Unified Mouse, Touch, Stylus/S-Pen)
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerUp);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Prevent browser gesture scrolling on mobile touch / stylus
+  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 }
 
 function attachTrimetricInteraction() {
   const canvas = document.getElementById('canvas-trimetric');
   if (!canvas) return;
-
-  function getCanvasCoords(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    return [
-      Math.round((e.clientX - rect.left) * scaleX),
-      Math.round((e.clientY - rect.top) * scaleY)
-    ];
-  }
 
   // Snap to 30°, 90°, 150°, 210°, 270°, 330° isometric angles
   function snapToIsometric(origin, [x, y]) {
@@ -952,8 +1073,17 @@ function attachTrimetricInteraction() {
     return [x, y];
   }
 
-  canvas.addEventListener('mousedown', (e) => {
-    const [rawX, rawY] = getCanvasCoords(e);
+  let activePointerId = null;
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    activePointerId = e.pointerId;
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    const [rawX, rawY] = getCanvasCoords(e, canvas);
     state.trimetric.isPointerDown = true;
 
     if (state.trimetric.mode === 'visible' || state.trimetric.mode === 'hidden') {
@@ -972,8 +1102,9 @@ function attachTrimetricInteraction() {
     }
   });
 
-  canvas.addEventListener('mousemove', (e) => {
-    const [rawX, rawY] = getCanvasCoords(e);
+  canvas.addEventListener('pointermove', (e) => {
+    e.preventDefault();
+    const [rawX, rawY] = getCanvasCoords(e, canvas);
     if (state.trimetric.currentStroke && state.trimetric.currentStroke.points.length > 0) {
       const lastPt = state.trimetric.currentStroke.points[state.trimetric.currentStroke.points.length - 1];
       state.trimetric.currentMousePos = snapToIsometric(lastPt, [rawX, rawY]);
@@ -983,14 +1114,37 @@ function attachTrimetricInteraction() {
     }
   });
 
+  canvas.addEventListener('pointerup', (e) => {
+    state.trimetric.isPointerDown = false;
+    if (activePointerId !== null) {
+      try {
+        canvas.releasePointerCapture(activePointerId);
+      } catch (_) {}
+      activePointerId = null;
+    }
+  });
+
+  canvas.addEventListener('pointercancel', (e) => {
+    state.trimetric.isPointerDown = false;
+    if (activePointerId !== null) {
+      try {
+        canvas.releasePointerCapture(activePointerId);
+      } catch (_) {}
+      activePointerId = null;
+    }
+  });
+
   canvas.addEventListener('dblclick', () => {
-    // Commit stroke on double click
+    // Commit stroke on double click or double tap
     if (state.trimetric.currentStroke && state.trimetric.currentStroke.points.length >= 2) {
       state.trimetric.strokes.push(state.trimetric.currentStroke);
       state.trimetric.currentStroke = null;
       redrawTrimetricView();
     }
   });
+
+  canvas.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 }
 
 // ── View Mode Switching & Tool Actions ──────────────────────
