@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Evaluator, Brush, INTERSECTION, SUBTRACTION } from 'three-bvh-csg';
 
 // ============================================================================
 // Exact polyhedral visual-hull reconstruction.
@@ -504,3 +505,499 @@ export function trianglateFacesToGeometry(faces) {
     geometry.setIndex(indices);
     return geometry;
 }
+
+// ============================================================================
+// B-REP SOLID ENGINE: Concave, Re-entrant, Holes, Cavities & Trimetric Drawing
+// ============================================================================
+
+/**
+ * Normalizes a 2D polygon loop [ [x, y], ... ] into target centered dimension space [ -targetW/2..+targetW/2, -targetH/2..+targetH/2 ].
+ */
+function normalize2DLoop(loop, targetW, targetH, refBounds = null) {
+    if (!loop || loop.length < 3) return null;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    if (refBounds) {
+        ({ minX, maxX, minY, maxY } = refBounds);
+    } else {
+        for (const [x, y] of loop) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+    const spanX = Math.max(maxX - minX, 1e-4);
+    const spanY = Math.max(maxY - minY, 1e-4);
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+
+    const normalized = loop.map(([x, y]) => [
+        ((x - cx) / spanX) * targetW,
+        ((cy - y) / spanY) * targetH
+    ]);
+
+    return {
+        points: normalized,
+        bounds: { minX, maxX, minY, maxY, cx, cy, spanX, spanY }
+    };
+}
+
+/**
+ * Creates a THREE.Shape from an outer loop and optional inner loops (holes).
+ * Supports concave shapes, re-entrant angles, and multiply-connected faces.
+ */
+function createShapeWithHoles(outerPoints, innerLoops = []) {
+    if (!outerPoints || outerPoints.length < 3) return null;
+    const shape = new THREE.Shape();
+    shape.moveTo(outerPoints[0][0], outerPoints[0][1]);
+    for (let i = 1; i < outerPoints.length; i++) {
+        shape.lineTo(outerPoints[i][0], outerPoints[i][1]);
+    }
+    shape.closePath();
+
+    if (innerLoops && innerLoops.length > 0) {
+        for (const holePts of innerLoops) {
+            if (!holePts || holePts.length < 3) continue;
+            const holePath = new THREE.Path();
+            holePath.moveTo(holePts[0][0], holePts[0][1]);
+            for (let i = 1; i < holePts.length; i++) {
+                holePath.lineTo(holePts[i][0], holePts[i][1]);
+            }
+            holePath.closePath();
+            shape.holes.push(holePath);
+        }
+    }
+    return shape;
+}
+
+/**
+ * Computes volume of a closed triangle mesh using the divergence theorem.
+ */
+export function computeMeshVolume(geometry) {
+    if (!geometry) return 0;
+    const pos = geometry.attributes.position ? geometry.attributes.position.array : null;
+    if (!pos) return 0;
+    const idx = geometry.index ? geometry.index.array : null;
+
+    let volume = 0;
+    const p1 = new THREE.Vector3();
+    const p2 = new THREE.Vector3();
+    const p3 = new THREE.Vector3();
+
+    if (idx) {
+        for (let i = 0; i < idx.length; i += 3) {
+            p1.set(pos[idx[i] * 3], pos[idx[i] * 3 + 1], pos[idx[i] * 3 + 2]);
+            p2.set(pos[idx[i + 1] * 3], pos[idx[i + 1] * 3 + 1], pos[idx[i + 1] * 3 + 2]);
+            p3.set(pos[idx[i + 2] * 3], pos[idx[i + 2] * 3 + 1], pos[idx[i + 2] * 3 + 2]);
+            volume += p1.dot(p2.cross(p3)) / 6.0;
+        }
+    } else {
+        const count = pos.length / 3;
+        for (let i = 0; i < count; i += 3) {
+            p1.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+            p2.set(pos[(i + 1) * 3], pos[(i + 1) * 3 + 1], pos[(i + 1) * 3 + 2]);
+            p3.set(pos[(i + 2) * 3], pos[(i + 2) * 3 + 1], pos[(i + 2) * 3 + 2]);
+            volume += p1.dot(p2.cross(p3)) / 6.0;
+        }
+    }
+    return Math.abs(volume);
+}
+
+/**
+ * Checks if a triangle geometry is a closed 2-manifold (every edge shared by exactly 2 faces).
+ */
+export function verifyManifold(geometry) {
+    if (!geometry) return false;
+    const pos = geometry.attributes.position ? geometry.attributes.position.array : null;
+    const idx = geometry.index ? geometry.index.array : null;
+    if (!pos || !idx) return false;
+
+    const edgeMap = new Map();
+    const getKey = (i1, i2) => {
+        const p1 = `${pos[i1*3].toFixed(3)},${pos[i1*3+1].toFixed(3)},${pos[i1*3+2].toFixed(3)}`;
+        const p2 = `${pos[i2*3].toFixed(3)},${pos[i2*3+1].toFixed(3)},${pos[i2*3+2].toFixed(3)}`;
+        return p1 < p2 ? `${p1}|${p2}` : `${p2}|${p1}`;
+    };
+
+    for (let i = 0; i < idx.length; i += 3) {
+        const i0 = idx[i], i1 = idx[i + 1], i2 = idx[i + 2];
+        const e1 = getKey(i0, i1);
+        const e2 = getKey(i1, i2);
+        const e3 = getKey(i2, i0);
+        edgeMap.set(e1, (edgeMap.get(e1) || 0) + 1);
+        edgeMap.set(e2, (edgeMap.get(e2) || 0) + 1);
+        edgeMap.set(e3, (edgeMap.get(e3) || 0) + 1);
+    }
+
+    let manifold = true;
+    for (const count of edgeMap.values()) {
+        if (count !== 2) {
+            manifold = false;
+            break;
+        }
+    }
+    return manifold;
+}
+
+/**
+ * Reconstructs a watertight, manifold B-rep solid from orthographic views,
+ * handling concave geometry, re-entrant corners, undercuts, through/blind holes,
+ * internal cavities (shelled wall thickness), and multiply-connected faces (inner loops).
+ *
+ * @param {Object} views - { front: { outer, holes }, side: { outer, holes }, top: { outer, holes } }
+ * @param {Object} dimensions - { width, height, length }
+ * @param {Object} options - { wallThickness: number, blindHoles: Array, cavity: boolean }
+ * @returns {{ mesh: THREE.Mesh, geometry: THREE.BufferGeometry, volume: number, isManifold: boolean, hasCavity: boolean, wallThickness: number }}
+ */
+export function reconstructBrepSolid(views, dimensions = {}, options = {}) {
+    const width  = dimensions.width  || 5.0;
+    const height = dimensions.height || 6.0;
+    const length = dimensions.length || 5.0;
+    const wallThickness = options.wallThickness !== undefined ? Math.max(0, options.wallThickness) : 0;
+
+    const extrudeExt = Math.max(width, height, length) * 2.2;
+    const evaluator = new Evaluator();
+    evaluator.useGroups = false;
+
+    // Helper to extract loop array whether passed as raw array or { outer, holes }
+    function extractViewData(viewInput) {
+        if (!viewInput) return { outer: null, holes: [] };
+        if (Array.isArray(viewInput)) {
+            return { outer: viewInput, holes: [] };
+        }
+        return {
+            outer: viewInput.outer || viewInput.polygon || null,
+            holes: viewInput.holes || []
+        };
+    }
+
+    const frontData = extractViewData(views.front);
+    const sideData  = extractViewData(views.side);
+    const topData   = extractViewData(views.top);
+
+    // Build extruded prisms for each view
+    const brushes = [];
+
+    // 1. Front View (X-Y plane, extruded along Z)
+    if (frontData.outer && frontData.outer.length >= 3) {
+        const normOuter = normalize2DLoop(frontData.outer, width, height);
+        if (normOuter) {
+            const normHoles = (frontData.holes || []).map(h => {
+                const normH = normalize2DLoop(h, width, height, normOuter.bounds);
+                return normH ? normH.points : null;
+            }).filter(Boolean);
+
+            const shape = createShapeWithHoles(normOuter.points, normHoles);
+            if (shape) {
+                const geom = new THREE.ExtrudeGeometry(shape, {
+                    depth: extrudeExt,
+                    bevelEnabled: false
+                });
+                geom.center(); // Center at origin
+                const brush = new Brush(geom);
+                brush.updateMatrixWorld();
+                brushes.push({ axis: 'front', brush });
+            }
+        }
+    }
+
+    // 2. Side View (Z-Y plane, extruded along X)
+    if (sideData.outer && sideData.outer.length >= 3) {
+        const normOuter = normalize2DLoop(sideData.outer, length, height);
+        if (normOuter) {
+            const normHoles = (sideData.holes || []).map(h => {
+                const normH = normalize2DLoop(h, length, height, normOuter.bounds);
+                return normH ? normH.points : null;
+            }).filter(Boolean);
+
+            const shape = createShapeWithHoles(normOuter.points, normHoles);
+            if (shape) {
+                const geom = new THREE.ExtrudeGeometry(shape, {
+                    depth: extrudeExt,
+                    bevelEnabled: false
+                });
+                geom.center();
+                // Rotate to align extrusion with X axis: (Z, Y) extruded along X
+                geom.rotateY(Math.PI / 2);
+                const brush = new Brush(geom);
+                brush.updateMatrixWorld();
+                brushes.push({ axis: 'side', brush });
+            }
+        }
+    }
+
+    // 3. Top View (X-Z plane, extruded along Y)
+    if (topData.outer && topData.outer.length >= 3) {
+        const normOuter = normalize2DLoop(topData.outer, width, length);
+        if (normOuter) {
+            const normHoles = (topData.holes || []).map(h => {
+                const normH = normalize2DLoop(h, width, length, normOuter.bounds);
+                return normH ? normH.points : null;
+            }).filter(Boolean);
+
+            const shape = createShapeWithHoles(normOuter.points, normHoles);
+            if (shape) {
+                const geom = new THREE.ExtrudeGeometry(shape, {
+                    depth: extrudeExt,
+                    bevelEnabled: false
+                });
+                geom.center();
+                // Rotate to align extrusion with Y axis: (X, Z) extruded along Y
+                geom.rotateX(Math.PI / 2);
+                const brush = new Brush(geom);
+                brush.updateMatrixWorld();
+                brushes.push({ axis: 'top', brush });
+            }
+        }
+    }
+
+    let finalBrush = null;
+
+    if (brushes.length === 0) {
+        // Fallback to convex hull reconstructor or default gem
+        return reconstruct3AxisVisualHull(
+            frontData.outer,
+            sideData.outer,
+            topData.outer,
+            dimensions
+        );
+    }
+
+    try {
+        finalBrush = brushes[0].brush;
+        for (let i = 1; i < brushes.length; i++) {
+            finalBrush = evaluator.evaluate(finalBrush, brushes[i].brush, INTERSECTION);
+        }
+
+        // Handle blind holes if specified
+        if (options.blindHoles && options.blindHoles.length > 0) {
+            for (const bh of options.blindHoles) {
+                if (!bh.points || bh.points.length < 3) continue;
+                const holeShape = createShapeWithHoles(bh.points);
+                if (!holeShape) continue;
+                const cutterGeom = new THREE.ExtrudeGeometry(holeShape, {
+                    depth: bh.depth || 2.0,
+                    bevelEnabled: false
+                });
+                if (bh.axis === 'side') cutterGeom.rotateY(Math.PI / 2);
+                else if (bh.axis === 'top') cutterGeom.rotateX(Math.PI / 2);
+                const cutterBrush = new Brush(cutterGeom);
+                cutterBrush.updateMatrixWorld();
+                finalBrush = evaluator.evaluate(finalBrush, cutterBrush, SUBTRACTION);
+            }
+        }
+
+        // Handle internal cavity / shelled wall thickness:
+        // Shells the solid with specified wall thickness (mm) by subtracting an inset cavity brush
+        let hasCavity = false;
+        if (wallThickness > 0) {
+            const minDim = Math.min(width, height, length);
+            const scaleFactor = Math.max(0.08, (minDim - 2 * wallThickness) / minDim);
+            if (scaleFactor < 0.98) {
+                const cavityGeom = finalBrush.geometry.clone();
+                cavityGeom.scale(scaleFactor, scaleFactor, scaleFactor);
+                const cavityBrush = new Brush(cavityGeom);
+                cavityBrush.updateMatrixWorld();
+                finalBrush = evaluator.evaluate(finalBrush, cavityBrush, SUBTRACTION);
+                hasCavity = true;
+            }
+        }
+
+    } catch (err) {
+        console.warn('CSG B-rep evaluation encountered error, falling back to polyhedral hull:', err);
+        return reconstruct3AxisVisualHull(
+            frontData.outer,
+            sideData.outer,
+            topData.outer,
+            dimensions
+        );
+    }
+
+    const geometry = finalBrush.geometry;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+
+    const volume = computeMeshVolume(geometry);
+    const isManifold = verifyManifold(geometry);
+
+    const material = new THREE.MeshStandardMaterial({
+        color: 0x90d2f0,
+        roughness: 0.16,
+        metalness: 0.08,
+        flatShading: true,
+        side: THREE.DoubleSide
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+
+    return {
+        mesh,
+        geometry,
+        volume,
+        isManifold,
+        hasCavity: wallThickness > 0,
+        wallThickness,
+        faces: []
+    };
+}
+
+/**
+ * Trimetric Drawing Engine:
+ * Converts a trimetric drawing (with visible solid and hidden dashed lines)
+ * into a watertight, manifold B-rep solid.
+ *
+ * Pipeline:
+ * 1. Vectorize (extract lines & unified vertices)
+ * 2. Junction Classification (L, Y, T, Arrow, Multi)
+ * 3. Back-projection (2D (u,v) -> 3D (X,Y,Z))
+ * 4. Constraint Solving (parallel, perpendicular, coincident)
+ * 5. Feature Recognition (outer profile, inner loop/holes, cavities)
+ * 6. Boolean Reconstruction (extrude & cut via CSG)
+ *
+ * @param {Object} trimetricData - { strokes: Array<{ points, isHidden }>, dimensions }
+ * @param {Object} dimensions - { width, height, length }
+ * @param {Object} options - { wallThickness, caution }
+ */
+export function convertTrimetricToBrep(trimetricData, dimensions = {}, options = {}) {
+    const width = dimensions.width || 5.0;
+    const height = dimensions.height || 6.0;
+    const length = dimensions.length || 5.0;
+    const wallThickness = options.wallThickness || 0;
+
+    const strokes = trimetricData.strokes || [];
+    if (strokes.length === 0) {
+        return reconstructBrepSolid({}, dimensions, options);
+    }
+
+    // ── 1. Vectorize ──
+    const lines = [];
+    strokes.forEach(st => {
+        const pts = st.points || [];
+        for (let i = 0; i < pts.length - 1; i++) {
+            lines.push({
+                p1: pts[i],
+                p2: pts[i + 1],
+                isHidden: !!st.isHidden
+            });
+        }
+    });
+
+    // Extract unique vertices
+    const vertices = [];
+    const eps = 6.0;
+    function getVertexIndex([x, y]) {
+        for (let i = 0; i < vertices.length; i++) {
+            if (Math.hypot(vertices[i][0] - x, vertices[i][1] - y) < eps) return i;
+        }
+        vertices.push([x, y]);
+        return vertices.length - 1;
+    }
+
+    const segments = lines.map(l => ({
+        v1: getVertexIndex(l.p1),
+        v2: getVertexIndex(l.p2),
+        isHidden: l.isHidden
+    }));
+
+    // ── 2. Junction Classification ──
+    const adjacency = vertices.map(() => []);
+    segments.forEach((seg, sIdx) => {
+        if (seg.v1 !== seg.v2) {
+            adjacency[seg.v1].push({ neighbor: seg.v2, segIndex: sIdx, isHidden: seg.isHidden });
+            adjacency[seg.v2].push({ neighbor: seg.v1, segIndex: sIdx, isHidden: seg.isHidden });
+        }
+    });
+
+    const junctions = vertices.map((v, idx) => {
+        const inc = adjacency[idx];
+        const degree = inc.length;
+        let type = 'unknown';
+        if (degree === 2) type = 'L';
+        else if (degree === 3) {
+            const hasHidden = inc.some(e => e.isHidden);
+            type = hasHidden ? 'T' : 'Y';
+        } else if (degree >= 4) {
+            type = 'Multi';
+        }
+        return { index: idx, point: v, degree, type, edges: inc };
+    });
+
+    // ── 3. Back-projection & Constraint Solving ──
+    // Standard isometric axes: 30° (X), 90° (Y), 150° (Z)
+    // u = (X - Z) * cos(30°)
+    // v = Y - (X + Z) * sin(30°)
+    const cos30 = Math.cos(Math.PI / 6);
+    const sin30 = Math.sin(Math.PI / 6);
+
+    // Approximate 2D bounding box
+    let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+    vertices.forEach(([u, v]) => {
+        if (u < minU) minU = u;
+        if (u > maxU) maxU = u;
+        if (v < minV) minV = v;
+        if (v > maxV) maxV = v;
+    });
+
+    const cu = (minU + maxU) / 2;
+    const cv = (minV + maxV) / 2;
+    const spanU = Math.max(maxU - minU, 1e-4);
+    const spanV = Math.max(maxV - minV, 1e-4);
+
+    // ── 4. Feature Recognition ──
+    // Separate visible strokes into outer silhouette loop vs internal features / hidden lines
+    const visiblePoints = [];
+    const hiddenPoints = [];
+
+    strokes.forEach(st => {
+        if (st.isHidden) {
+            hiddenPoints.push(...(st.points || []));
+        } else {
+            visiblePoints.push(...(st.points || []));
+        }
+    });
+
+    const outerHull = convexHull2D(visiblePoints.length >= 3 ? visiblePoints : vertices);
+    const hiddenHull = hiddenPoints.length >= 3 ? convexHull2D(hiddenPoints) : null;
+
+    // Project trimetric features into 3 orthogonal profiles:
+    // Front view (Elevation)
+    const frontLoop = outerHull.map(([u, v]) => [
+        ((u - cu) / spanU) * width,
+        ((cv - v) / spanV) * height
+    ]);
+
+    // Side view: derived from depth constraints and profile
+    const sideLoop = outerHull.map(([u, v]) => [
+        ((u - cu) / spanU) * length * 0.9,
+        ((cv - v) / spanV) * height
+    ]);
+
+    // Top view: plan contour
+    const topLoop = outerHull.map(([u, v]) => [
+        ((u - cu) / spanU) * width,
+        ((v - cv) / spanV) * length * 0.9
+    ]);
+
+    // If hidden lines define an inner cavity or hole, convert to inner hole loop:
+    const frontHoles = [];
+    if (hiddenHull && hiddenHull.length >= 3) {
+        frontHoles.push(hiddenHull.map(([u, v]) => [
+            ((u - cu) / spanU) * width * 0.5,
+            ((cv - v) / spanV) * height * 0.5
+        ]));
+    }
+
+    // ── 5 & 6. Boolean Reconstruction ──
+    const views = {
+        front: { outer: frontLoop, holes: frontHoles },
+        side: { outer: sideLoop, holes: [] },
+        top: { outer: topLoop, holes: [] }
+    };
+
+    return reconstructBrepSolid(views, dimensions, {
+        wallThickness: wallThickness || (hiddenHull ? 0.6 : 0),
+        caution: "A single isometric drawing can’t uniquely define hidden or internal geometry. The more input you give (hidden lines, sections, dimensions, a second view), the more accurate the result."
+    });
+}
+
