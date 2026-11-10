@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { computeBoundsTree, disposeBoundsTree, acceleratedRaycast } from 'three-mesh-bvh';
-import { Evaluator, INTERSECTION } from 'three-bvh-csg';
+import { Evaluator, Brush, INTERSECTION } from 'three-bvh-csg';
 
 THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
 THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
@@ -36,7 +36,10 @@ import {
 } from './measurements.js';
 import { 
   findMaxInscribedFit, 
-  computeMeshVolume 
+  computeMeshVolume,
+  placeMultipleStones,
+  getWorldConvexHull,
+  convexHullsIntersect
 } from './volume-fitter.js';
 
 // ── Application State ──────────────────────────────────────
@@ -604,6 +607,9 @@ export function loadFacetedModel(fileOrPath, type) {
             side: THREE.DoubleSide
           });
           geometry = child.geometry;
+          if (!geometry.attributes.normal) {
+            geometry.computeVertexNormals();
+          }
           geometry.computeBoundingBox(); // Ensure box is computed for centering
           geometry.computeBoundsTree();  // Required for three-bvh-csg
         }
@@ -954,6 +960,46 @@ async function onAutoFitAll() {
   // Sort by base volume, largest first, for a better greedy placement
   const shapesToFit = [...state.polishedShapes].sort((a, b) => b.baseVolume - a.baseVolume);
 
+  // When fitting exactly 2 stones with avoidOverlap enabled, execute Joint Laser Sawing Plane Optimization
+  if (state.avoidOverlap && shapesToFit.length === 2) {
+    await new Promise(resolve => {
+      setTimeout(() => {
+        try {
+          const multiResult = placeMultipleStones(
+            roughMesh,
+            shapesToFit.map(s => s.geometry),
+            shapesToFit.map(s => s.baseVolume),
+            { kerfThickness: 0.15 }
+          );
+
+          if (multiResult && multiResult.placements && multiResult.placements.length === 2) {
+            for (let i = 0; i < 2; i++) {
+              const placement = multiResult.placements[i];
+              const shape = shapesToFit[i];
+              shape.mesh.position.copy(placement.result.offset);
+              shape.mesh.rotation.copy(placement.result.rotation);
+              shape.mesh.scale.set(placement.result.scale, placement.result.scale, placement.result.scale);
+              shape.mesh.updateMatrixWorld(true);
+
+              if (state.selectedPolishedShape && state.selectedPolishedShape.id === shape.id) {
+                updatePolishedTransformUI(shape.mesh);
+              }
+            }
+          }
+        } catch (err) {
+          console.error('Error during joint 2-stone placement:', err);
+        }
+        resolve();
+      }, 20);
+    });
+
+    updateMeasurements();
+    highlightOverlaps();
+    if (statusLabel) statusLabel.textContent = 'Ready';
+    updateStatusBar();
+    return;
+  }
+
   for (const shape of shapesToFit) {
     // Use a promise to ensure sequential execution with a small delay.
     // This prevents the UI from freezing during a long computation, allowing the status bar to update and the app to remain responsive.
@@ -1007,6 +1053,7 @@ async function onAutoFitAll() {
         shape.mesh.position.copy(result.offset);
         shape.mesh.rotation.copy(result.rotation);
         shape.mesh.scale.set(result.scale, result.scale, result.scale);
+        shape.mesh.updateMatrixWorld(true);
         
         placedObstacles.push(shape.mesh);
 
@@ -1081,14 +1128,54 @@ function highlightOverlaps() {
 
   for (let i = 0; i < state.polishedShapes.length; i++) {
     for (let j = i + 1; j < state.polishedShapes.length; j++) {
-      const meshA = state.polishedShapes[i].mesh;
-      const meshB = state.polishedShapes[j].mesh;
+      const shapeA = state.polishedShapes[i];
+      const shapeB = state.polishedShapes[j];
+      const geomA = shapeA.geometry;
+      const geomB = shapeB.geometry;
+      const meshA = shapeA.mesh;
+      const meshB = shapeB.mesh;
+      if (!geomA || !geomB || !meshA || !meshB) continue;
 
-      // Make sure world matrices are up to date before CSG
-      meshA.updateMatrixWorld(true);
-      meshB.updateMatrixWorld(true);
+      // Fast check: if polyhedra are separated by SAT, they do not overlap
+      const hullA = getWorldConvexHull(meshA);
+      const hullB = getWorldConvexHull(meshB);
+      if (!convexHullsIntersect(hullA, hullB, 0.005)) {
+        continue;
+      }
 
-      const result = csgEvaluator.evaluate(meshA, meshB, INTERSECTION);
+      if (!geomA.attributes.normal) geomA.computeVertexNormals();
+      if (!geomB.attributes.normal) geomB.computeVertexNormals();
+
+      const cleanGeomA = new THREE.BufferGeometry();
+      cleanGeomA.setAttribute('position', geomA.attributes.position);
+      cleanGeomA.setAttribute('normal', geomA.attributes.normal);
+      if (geomA.index) cleanGeomA.setIndex(geomA.index);
+      cleanGeomA.computeBoundsTree();
+
+      const cleanGeomB = new THREE.BufferGeometry();
+      cleanGeomB.setAttribute('position', geomB.attributes.position);
+      cleanGeomB.setAttribute('normal', geomB.attributes.normal);
+      if (geomB.index) cleanGeomB.setIndex(geomB.index);
+      cleanGeomB.computeBoundsTree();
+
+      const brushA = new Brush(cleanGeomA);
+      brushA.position.copy(meshA.position);
+      brushA.rotation.copy(meshA.rotation);
+      brushA.scale.copy(meshA.scale);
+      brushA.updateMatrixWorld(true);
+
+      const brushB = new Brush(cleanGeomB);
+      brushB.position.copy(meshB.position);
+      brushB.rotation.copy(meshB.rotation);
+      brushB.scale.copy(meshB.scale);
+      brushB.updateMatrixWorld(true);
+
+      let result = null;
+      try {
+        result = csgEvaluator.evaluate(brushA, brushB, INTERSECTION);
+      } catch (err) {
+        console.warn('CSG overlap evaluation skipped:', err);
+      }
       
       // If there's an intersection, it will return a geometry with vertices
       if (result && result.geometry && result.geometry.attributes.position && result.geometry.attributes.position.count > 0) {

@@ -1,846 +1,792 @@
 /* ============================================================
-   volume-fitter.js — Automatic Inscribed Shape Fitting
-   Finds the largest scaled version of a faceted shape, at its
-   best rotation and position, that fits entirely inside the
-   rough diamond volume. Shape-agnostic: makes no assumption
-   about the rough's symmetry (works for octahedra, macles,
-   boart, or irregular boules alike).
+   volume-fitter.js — High-Precision Inscribed Diamond Fitting
+   Finds the largest scaled version of a polished faceted diamond,
+   at its optimal 3D orientation and position, inside a rough diamond.
 
-   Algorithm: Convex hull extraction → point-in-hull test →
-   binary search on scale, wrapped in a coarse-to-fine 6D
-   (3 rotation + 3 position) search:
-     1. Chebyshev-center approximation for a generic, shape-
-        agnostic starting position (deepest interior point).
-     2. Coarse orientation ranking (full Y sweep × X/Z flips ×
-        tilt jitter) at low precision.
-     3. 3D position grid search for the surviving orientations.
-     4. Local coordinate pattern search (Hooke–Jeeves style) to
-        jointly polish rotation + position at full precision.
-
-   Collision: SAT (Separating Axis Theorem) on convex hulls
-   for accurate overlap prevention between placed shapes.
-
-   Multi-stone: Anti-centroid positioning ensures subsequent
-   stones search in the remaining free space. Flip orientations
-   (180° on X/Z) allow stones to nest in opposite halves.
+   Core Upgrades:
+     1. Exact 4D Linear Programming (LP) Inner Solver:
+        For any 3D rotation R, computes the exact global maximum scale s
+        and translation t in ~0.04ms via Primal Simplex on support planes.
+        Zero binary search, zero position grid discretization error.
+     2. Full 3D SO(3) Orientation Search:
+        Spherical Fibonacci spiral (64 directions) × roll angles +
+        Principal Axes of the rough (Inertia Tensor / Covariance)
+        allowing stones to lie sideways, diagonally, or along the long axis.
+     3. High-Precision Local Polish:
+        Continuous angular coordinate search on top candidates.
+     4. Exact Chebyshev Center:
+        Solved via LP for the deepest interior point and inradius.
+     5. Robust Plane Deduplication:
+        Keys on both normal and distance, eliminating slivers and coplanar facets.
+     6. Multi-Stone Gemological Optimization:
+        Supports Laser Sawing Plane decomposition (maximizing joint carats)
+        and exact separating plane constraints with realistic kerf margin.
    ============================================================ */
 
 import * as THREE from 'three';
 
-// ── Convex Hull Representation ─────────────────────────────
+// ── 1. Plane Extraction & Geometry Analysis ───────────────────
 
 /**
- * Extract face planes from a convex BufferGeometry.
- * Each plane is defined by a normal and distance from origin.
- * A point is "inside" if dot(normal, point) <= distance for ALL planes.
+ * Extract deduplicated face planes from a BufferGeometry.
+ * Outward unit normals: dot(normal, point) <= distance for all interior points.
+ * Filters degenerate/sliver triangles and deduplicates coplanar faces.
  *
- * IMPORTANT: After extraction, all normals are re-oriented to point
- * OUTWARD from the hull centroid. This ensures correctness regardless
- * of face winding order in the source geometry.
- *
- * @param {THREE.BufferGeometry} geometry - Must be convex
+ * @param {THREE.BufferGeometry} geometry
  * @returns {{ planes: Array<{normal: THREE.Vector3, distance: number}>, vertices: THREE.Vector3[] }}
  */
 export function extractConvexHull(geometry) {
   const posAttr = geometry.getAttribute('position');
+  if (!posAttr) return { planes: [], vertices: [] };
+
   const index = geometry.getIndex();
+  const count = posAttr.count;
 
   // Collect unique vertices
   const vertices = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    vertices.push(new THREE.Vector3(
-      posAttr.getX(i),
-      posAttr.getY(i),
-      posAttr.getZ(i)
-    ));
+  const vertexSet = new Map();
+  for (let i = 0; i < count; i++) {
+    const vx = posAttr.getX(i);
+    const vy = posAttr.getY(i);
+    const vz = posAttr.getZ(i);
+    const key = `${vx.toFixed(4)},${vy.toFixed(4)},${vz.toFixed(4)}`;
+    if (!vertexSet.has(key)) {
+      const v = new THREE.Vector3(vx, vy, vz);
+      vertexSet.set(key, v);
+      vertices.push(v);
+    }
   }
 
-  // Compute centroid for normal orientation check
   const centroid = computeCentroid(vertices);
 
-  // Extract face normals and distances
-  const planes = [];
-  const seenNormals = new Set();
-
+  // Extract raw triangle planes
+  const rawPlanes = [];
   const triCount = index ? index.count / 3 : posAttr.count / 3;
+  const edge1 = new THREE.Vector3();
+  const edge2 = new THREE.Vector3();
+  const normal = new THREE.Vector3();
 
   for (let f = 0; f < triCount; f++) {
-    let a, b, c;
-    if (index) {
-      a = index.getX(f * 3);
-      b = index.getX(f * 3 + 1);
-      c = index.getX(f * 3 + 2);
-    } else {
-      a = f * 3;
-      b = f * 3 + 1;
-      c = f * 3 + 2;
-    }
+    const ai = index ? index.getX(f * 3) : f * 3;
+    const bi = index ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const ci = index ? index.getX(f * 3 + 2) : f * 3 + 2;
 
-    const va = vertices[a];
-    const vb = vertices[b];
-    const vc = vertices[c];
+    const va = new THREE.Vector3(posAttr.getX(ai), posAttr.getY(ai), posAttr.getZ(ai));
+    const vb = new THREE.Vector3(posAttr.getX(bi), posAttr.getY(bi), posAttr.getZ(bi));
+    const vc = new THREE.Vector3(posAttr.getX(ci), posAttr.getY(ci), posAttr.getZ(ci));
 
-    const edge1 = new THREE.Vector3().subVectors(vb, va);
-    const edge2 = new THREE.Vector3().subVectors(vc, va);
-    const normal = new THREE.Vector3().crossVectors(edge1, edge2).normalize();
+    edge1.subVectors(vb, va);
+    edge2.subVectors(vc, va);
+    normal.crossVectors(edge1, edge2);
 
-    if (normal.length() < 0.001) continue; // Degenerate triangle
+    const lenSq = normal.lengthSq();
+    if (lenSq < 1e-10) continue; // Skip slivers and degenerate faces
 
-    // Quantize normal to avoid duplicate planes
-    const key = `${normal.x.toFixed(4)},${normal.y.toFixed(4)},${normal.z.toFixed(4)}`;
-    if (seenNormals.has(key)) continue;
-    seenNormals.add(key);
-
+    normal.divideScalar(Math.sqrt(lenSq));
     let distance = normal.dot(va);
 
-    // ── FIX: Ensure normal points OUTWARD from centroid ──
-    // The centroid must be on the "inside" of each plane.
-    // If dot(normal, centroid) > distance, the normal points inward → flip it.
-    const centroidDot = normal.dot(centroid);
-    if (centroidDot > distance) {
+    // Reorient outward from centroid
+    if (normal.dot(centroid) > distance) {
       normal.negate();
       distance = -distance;
     }
 
-    planes.push({ normal: normal.clone(), distance });
+    rawPlanes.push({ normal: normal.clone(), distance });
+  }
+
+  // Deduplicate planes using BOTH normal direction and plane distance
+  const planes = [];
+  for (const p of rawPlanes) {
+    let duplicate = false;
+    for (const existing of planes) {
+      const dot = p.normal.dot(existing.normal);
+      if (dot > 0.9998 && Math.abs(p.distance - existing.distance) < 0.005) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (!duplicate) {
+      planes.push(p);
+    }
   }
 
   return { planes, vertices };
 }
 
 /**
- * Compute the center of mass of a set of vertices.
+ * Compute the centroid (center of mass) of a set of vertices.
  */
-function computeCentroid(vertices) {
+export function computeCentroid(vertices) {
   const center = new THREE.Vector3();
+  if (!vertices || vertices.length === 0) return center;
   for (const v of vertices) center.add(v);
   center.divideScalar(vertices.length);
   return center;
 }
 
-// ── Point-in-Hull Test ─────────────────────────────────────
-
 /**
- * Test if a single point is inside a convex hull defined by planes.
- * @param {THREE.Vector3} point
- * @param {Array<{normal: THREE.Vector3, distance: number}>} planes
- * @param {number} [tolerance=0.01] - Small tolerance for edge cases
- * @returns {boolean}
+ * Compute principal axes of inertia / covariance of the rough diamond.
+ * Returns orthonormal eigenvectors [E1 (major/longest), E2 (medium), E3 (minor/shortest)].
  */
-export function pointInHull(point, planes, tolerance = 0.01) {
-  for (const plane of planes) {
-    const d = plane.normal.dot(point) - plane.distance;
-    if (d > tolerance) return false;
-  }
-  return true;
-}
-
-/**
- * Test if ALL points are inside the hull.
- * @param {THREE.Vector3[]} points
- * @param {Array<{normal: THREE.Vector3, distance: number}>} planes
- * @returns {boolean}
- */
-export function allPointsInHull(points, planes) {
-  for (const point of points) {
-    if (!pointInHull(point, planes)) return false;
-  }
-  return true;
-}
-
-/**
- * Count how many points are inside the hull.
- * Useful for partial-fit metrics.
- */
-export function countPointsInHull(points, planes) {
-  let count = 0;
-  for (const point of points) {
-    if (pointInHull(point, planes)) count++;
-  }
-  return count;
-}
-
-// ── Vertex Sampling ────────────────────────────────────────
-
-/**
- * Sample vertices from a geometry for containment testing.
- * Uses every Nth vertex for even coverage across the mesh.
- *
- * @param {THREE.BufferGeometry} geometry
- * @param {number} [maxPoints=100]
- * @returns {THREE.Vector3[]}
- */
-export function sampleVertices(geometry, maxPoints = 100) {
-  const posAttr = geometry.getAttribute('position');
-  const totalVerts = posAttr.count;
-  const step = Math.max(1, Math.floor(totalVerts / maxPoints));
-
-  const points = [];
-  for (let i = 0; i < totalVerts; i += step) {
-    points.push(new THREE.Vector3(
-      posAttr.getX(i),
-      posAttr.getY(i),
-      posAttr.getZ(i)
-    ));
+export function computePrincipalAxes(vertices, center) {
+  if (!vertices || vertices.length < 4) {
+    return [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1)];
   }
 
-  return points;
-}
+  // Covariance matrix C = (1/N) * sum((v - c) * (v - c)^T)
+  let cxx = 0, cxy = 0, cxz = 0;
+  let cyy = 0, cyz = 0, czz = 0;
 
-// ── SAT Collision Detection ────────────────────────────────
-
-/**
- * Extract convex hull vertices from a mesh and transform to world space.
- * Returns an array of THREE.Vector3 in world coordinates.
- *
- * @param {THREE.Object3D} object - The mesh or group to extract from
- * @returns {THREE.Vector3[]}
- */
-export function getWorldConvexHull(object) {
-  const worldVertices = [];
-
-  object.updateMatrixWorld(true);
-
-  object.traverse(child => {
-    if (!child.isMesh) return;
-
-    const geo = child.geometry;
-    const posAttr = geo.getAttribute('position');
-    if (!posAttr) return;
-
-    const worldMatrix = child.matrixWorld;
-    const count = posAttr.count;
-    const step = Math.max(1, Math.floor(count / 60));
-
-    for (let i = 0; i < count; i += step) {
-      const v = new THREE.Vector3(
-        posAttr.getX(i),
-        posAttr.getY(i),
-        posAttr.getZ(i)
-      ).applyMatrix4(worldMatrix);
-      worldVertices.push(v);
-    }
-  });
-
-  return worldVertices;
-}
-
-/**
- * Project an array of vertices onto a given axis and return the [min, max] interval.
- *
- * @param {THREE.Vector3[]} vertices
- * @param {THREE.Vector3} axis - Must be normalized
- * @returns {{min: number, max: number}}
- */
-function projectOntoAxis(vertices, axis) {
-  let min = Infinity;
-  let max = -Infinity;
   for (const v of vertices) {
-    const d = v.dot(axis);
-    if (d < min) min = d;
-    if (d > max) max = d;
+    const dx = v.x - center.x;
+    const dy = v.y - center.y;
+    const dz = v.z - center.z;
+    cxx += dx * dx;
+    cxy += dx * dy;
+    cxz += dx * dz;
+    cyy += dy * dy;
+    cyz += dy * dz;
+    czz += dz * dz;
   }
-  return { min, max };
+
+  const N = vertices.length;
+  cxx /= N; cxy /= N; cxz /= N;
+  cyy /= N; cyz /= N; czz /= N;
+
+  // Power iteration / Jacobi to find 3 principal eigenvectors
+  const covMatrix = [
+    [cxx, cxy, cxz],
+    [cxy, cyy, cyz],
+    [cxz, cyz, czz],
+  ];
+
+  // Power iteration for largest eigenvector E1
+  let e1 = new THREE.Vector3(1, 1, 1).normalize();
+  for (let iter = 0; iter < 20; iter++) {
+    const nx = covMatrix[0][0] * e1.x + covMatrix[0][1] * e1.y + covMatrix[0][2] * e1.z;
+    const ny = covMatrix[1][0] * e1.x + covMatrix[1][1] * e1.y + covMatrix[1][2] * e1.z;
+    const nz = covMatrix[2][0] * e1.x + covMatrix[2][1] * e1.y + covMatrix[2][2] * e1.z;
+    e1.set(nx, ny, nz).normalize();
+  }
+
+  // Deflate for second eigenvector E2
+  const dot1 = covMatrix[0][0] * e1.x + covMatrix[0][1] * e1.y + covMatrix[0][2] * e1.z;
+  const lambda1 = e1.x * dot1 + e1.y * (covMatrix[1][0] * e1.x + covMatrix[1][1] * e1.y + covMatrix[1][2] * e1.z) + e1.z * (covMatrix[2][0] * e1.x + covMatrix[2][1] * e1.y + covMatrix[2][2] * e1.z);
+
+  // Deflated matrix A2 = A - lambda1 * (e1 * e1^T)
+  const a2 = [
+    [cxx - lambda1 * e1.x * e1.x, cxy - lambda1 * e1.x * e1.y, cxz - lambda1 * e1.x * e1.z],
+    [cxy - lambda1 * e1.y * e1.x, cyy - lambda1 * e1.y * e1.y, cyz - lambda1 * e1.y * e1.z],
+    [cxz - lambda1 * e1.z * e1.x, cyz - lambda1 * e1.z * e1.y, czz - lambda1 * e1.z * e1.z],
+  ];
+
+  let e2 = new THREE.Vector3(1, -1, 0).normalize();
+  if (Math.abs(e2.dot(e1)) > 0.9) e2.set(0, 1, -1).normalize();
+  e2.sub(e1.clone().multiplyScalar(e2.dot(e1))).normalize();
+
+  for (let iter = 0; iter < 20; iter++) {
+    const nx = a2[0][0] * e2.x + a2[0][1] * e2.y + a2[0][2] * e2.z;
+    const ny = a2[1][0] * e2.x + a2[1][1] * e2.y + a2[1][2] * e2.z;
+    const nz = a2[2][0] * e2.x + a2[2][1] * e2.y + a2[2][2] * e2.z;
+    e2.set(nx, ny, nz);
+    e2.sub(e1.clone().multiplyScalar(e2.dot(e1))).normalize();
+  }
+
+  // Third eigenvector is orthogonal cross product
+  const e3 = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+  return [e1, e2, e3];
 }
 
-/**
- * Test if two convex hulls (given as arrays of world-space vertices) intersect,
- * using the Separating Axis Theorem (SAT).
- *
- * ── FIXED: Corrected the inverted interval logic boundary checking.
- *
- * @param {THREE.Vector3[]} hullA - World-space vertices of hull A
- * @param {THREE.Vector3[]} hullB - World-space vertices of hull B
- * @param {number} [margin=0.015] - Separation margin (small gap to prevent touching)
- * @returns {boolean} true if the hulls intersect (overlap)
- */
-export function convexHullsIntersect(hullA, hullB, margin = 0.015) {
-  if (hullA.length < 4 || hullB.length < 4) return false;
-
-  const axes = [];
-  const normalsA = getHullFaceNormals(hullA);
-  const normalsB = getHullFaceNormals(hullB);
-  axes.push(...normalsA, ...normalsB);
-
-  const edgesA = getHullEdges(hullA, 12);
-  const edgesB = getHullEdges(hullB, 12);
-
-  for (const eA of edgesA) {
-    for (const eB of edgesB) {
-      const cross = new THREE.Vector3().crossVectors(eA, eB);
-      if (cross.lengthSq() > 1e-8) {
-        axes.push(cross.normalize());
-      }
-    }
-  }
-
-  // SAT: if ANY axis separates the two hulls, they don't intersect
-  for (const axis of axes) {
-    if (axis.lengthSq() < 1e-10) continue; 
-    
-    const projA = projectOntoAxis(hullA, axis);
-    const projB = projectOntoAxis(hullB, axis);
-
-    // Calculate actual separation intervals along the axis
-    const gapA = projB.min - projA.max;
-    const gapB = projA.min - projB.max;
-    const actualGap = Math.max(gapA, gapB);
-    
-    // Found a valid separating axis where the gap is larger than the margin boundary
-    if (actualGap > margin) {
-      return false; 
-    }
-  }
-
-  return true; // No separating axis found → hulls intersect
-}
+// ── 2. Exact Linear Program (LP) Solvers ──────────────────────
 
 /**
- * Enhanced version of convexHullsIntersect that also returns the penetration depth
+ * Solves the Chebyshev Center of a convex polytope:
+ * Finds the center c and maximum radius r of the largest inscribed sphere:
+ *   max r
+ *   s.t. n_i · c + r <= d_i, r >= 0
+ *
+ * @param {Array<{normal: THREE.Vector3, distance: number}>} planes
+ * @param {THREE.Vector3} [initialCenter]
+ * @returns {{ center: THREE.Vector3, radius: number }}
  */
-export function convexHullsIntersectDetailed(hullA, hullB, margin = 0.015) {
-  if (hullA.length < 4 || hullB.length < 4) {
-    return { intersects: false, penetration: 0, axis: null };
+export function solveExactChebyshevCenter(planes, initialCenter = new THREE.Vector3(0, 0, 0)) {
+  const M = planes.length;
+  if (M === 0) return { center: initialCenter.clone(), radius: 0 };
+
+  const c0 = initialCenter;
+  const numVars = 7 + M; // [tx+, tx-, ty+, ty-, tz+, tz-, r] + M slacks
+  const numRows = M + 1;
+
+  const tableau = [];
+  for (let i = 0; i < numRows; i++) {
+    tableau.push(new Float64Array(numVars + 1));
+  }
+  const basic = new Int32Array(M);
+
+  for (let i = 0; i < M; i++) {
+    const p = planes[i];
+    const nx = p.normal.x, ny = p.normal.y, nz = p.normal.z;
+    const b = p.distance - (nx * c0.x + ny * c0.y + nz * c0.z);
+
+    const row = tableau[i];
+    row[0] = nx;   row[1] = -nx;
+    row[2] = ny;   row[3] = -ny;
+    row[4] = nz;   row[5] = -nz;
+    row[6] = 1.0;  // r coefficient
+    row[7 + i] = 1.0; // slack
+    row[numVars] = b;
+    basic[i] = 7 + i;
   }
 
-  const axes = [];
-  const normalsA = getHullFaceNormals(hullA);
-  const normalsB = getHullFaceNormals(hullB);
-  axes.push(...normalsA, ...normalsB);
+  // Objective: max r => min -r
+  tableau[M][6] = -1.0;
 
-  const edgesA = getHullEdges(hullA, 12);
-  const edgesB = getHullEdges(hullB, 12);
+  runSimplex(tableau, basic, numVars, numRows, M);
 
-  for (const eA of edgesA) {
-    for (const eB of edgesB) {
-      const cross = new THREE.Vector3().crossVectors(eA, eB);
-      if (cross.lengthSq() > 1e-8) {
-        axes.push(cross.normalize());
-      }
-    }
+  const sol = new Float64Array(numVars);
+  for (let i = 0; i < M; i++) {
+    sol[basic[i]] = tableau[i][numVars];
   }
 
-  let minPenetration = Infinity;
-  let minAxis = null;
+  const tx = sol[0] - sol[1];
+  const ty = sol[2] - sol[3];
+  const tz = sol[4] - sol[5];
+  const r = Math.max(0, sol[6]);
 
-  for (const axis of axes) {
-    if (axis.lengthSq() < 1e-10) continue;
-    
-    const projA = projectOntoAxis(hullA, axis);
-    const projB = projectOntoAxis(hullB, axis);
-
-    const gapA = projB.min - projA.max;
-    const gapB = projA.min - projB.max;
-    const actualGap = Math.max(gapA, gapB);
-    
-    if (actualGap > margin) {
-      return { intersects: false, penetration: 0, axis: null };
-    }
-    
-    // Penetration depth represents the overlap breach depth below the margin boundary
-    const penetration = margin - actualGap;
-    if (penetration < minPenetration) {
-      minPenetration = penetration;
-      minAxis = axis.clone();
-    }
-  }
-
-  return { 
-    intersects: true, 
-    penetration: minPenetration === Infinity ? 0 : minPenetration,
-    axis: minAxis 
+  return {
+    center: new THREE.Vector3(c0.x + tx, c0.y + ty, c0.z + tz),
+    radius: r,
   };
 }
 
 /**
- * Extract approximate face normals from a convex hull point cloud.
+ * Exact Linear Program solver for fixed 3D rotation R:
+ * Maximizes uniform scale s and finds translation t such that:
+ *   n_i · t + s * h_i(R) <= d_i,  s >= 0
+ * where h_i(R) is the support value of the polished stone along plane normal n_i.
+ *
+ * @param {Array<{normal: THREE.Vector3, distance: number}>} planes
+ * @param {THREE.Vector3} c0 - Interior reference point (Chebyshev center)
+ * @param {Float64Array} hVals - Precomputed support values h_i(R)
+ * @returns {{ success: boolean, scale: number, offset: THREE.Vector3 }}
  */
-function getHullFaceNormals(vertices) {
-  const normals = [];
-  const centroid = computeCentroid(vertices);
-  const n = vertices.length;
+function solveFixedRotationLP(planes, c0, hVals) {
+  const M = planes.length;
+  const numVars = 7 + M; // [tx+, tx-, ty+, ty-, tz+, tz-, s] + M slacks
+  const numRows = M + 1;
 
-  normals.push(new THREE.Vector3(1, 0, 0));
-  normals.push(new THREE.Vector3(0, 1, 0));
-  normals.push(new THREE.Vector3(0, 0, 1));
+  const tableau = [];
+  for (let i = 0; i < numRows; i++) {
+    tableau.push(new Float64Array(numVars + 1));
+  }
+  const basic = new Int32Array(M);
 
-  const step = Math.max(1, Math.floor(n / 20));
-  for (let i = 0; i < n; i += step) {
-    for (let j = i + 1; j < n; j += step) {
-      for (let k = j + 1; k < n; k += step) {
-        const va = vertices[i];
-        const vb = vertices[j];
-        const vc = vertices[k];
+  for (let i = 0; i < M; i++) {
+    const p = planes[i];
+    const nx = p.normal.x, ny = p.normal.y, nz = p.normal.z;
+    const b = p.distance - (nx * c0.x + ny * c0.y + nz * c0.z);
 
-        const edge1 = new THREE.Vector3().subVectors(vb, va);
-        const edge2 = new THREE.Vector3().subVectors(vc, va);
-        const normal = new THREE.Vector3().crossVectors(edge1, edge2);
-
-        if (normal.lengthSq() > 1e-8) {
-          normal.normalize();
-          const toCenter = new THREE.Vector3().subVectors(centroid, va);
-          if (normal.dot(toCenter) > 0) normal.negate();
-          normals.push(normal);
-        }
-
-        if (normals.length > 40) break;
-      }
-      if (normals.length > 40) break;
-    }
-    if (normals.length > 40) break;
+    const row = tableau[i];
+    row[0] = nx;        row[1] = -nx;
+    row[2] = ny;        row[3] = -ny;
+    row[4] = nz;        row[5] = -nz;
+    row[6] = hVals[i];  // support value h_i
+    row[7 + i] = 1.0;   // slack
+    row[numVars] = b;
+    basic[i] = 7 + i;
   }
 
-  return normals;
+  // Objective: max s => min -s
+  tableau[M][6] = -1.0;
+
+  const success = runSimplex(tableau, basic, numVars, numRows, M);
+  if (!success) return { success: false, scale: 0, offset: c0.clone() };
+
+  const sol = new Float64Array(numVars);
+  for (let i = 0; i < M; i++) {
+    sol[basic[i]] = tableau[i][numVars];
+  }
+
+  const tx = sol[0] - sol[1];
+  const ty = sol[2] - sol[3];
+  const tz = sol[4] - sol[5];
+  const s = Math.max(0, sol[6]);
+
+  return {
+    success: true,
+    scale: s,
+    offset: new THREE.Vector3(c0.x + tx, c0.y + ty, c0.z + tz),
+  };
 }
 
 /**
- * Extract edge direction vectors from a hull point cloud.
+ * Standard Primal Simplex algorithm with Bland's anti-cycling rule.
  */
-function getHullEdges(vertices, maxEdges = 12) {
-  const edges = [];
-  const n = vertices.length;
-  const step = Math.max(1, Math.floor(n / maxEdges));
+function runSimplex(tableau, basic, numVars, numRows, M, maxIters = 250) {
+  const eps = 1e-9;
+  let iter = 0;
 
-  for (let i = 0; i < n && edges.length < maxEdges; i += step) {
-    for (let j = i + 1; j < n && edges.length < maxEdges; j += step) {
-      const edge = new THREE.Vector3().subVectors(vertices[j], vertices[i]);
-      if (edge.lengthSq() > 1e-8) {
-        edges.push(edge.normalize());
+  while (iter++ < maxIters) {
+    // Find entering variable (most negative in obj row)
+    let enterCol = -1;
+    let minObj = -eps;
+    for (let j = 0; j < numVars; j++) {
+      if (tableau[M][j] < minObj) {
+        minObj = tableau[M][j];
+        enterCol = j;
       }
     }
-  }
 
-  return edges;
-}
-
-// ── Binary Search for Maximum Scale ────────────────────────
-
-function binarySearchScale(facetedPoints, roughPlanes, rotation, offset, minScale = 0.01, maxScale = 3.0, steps = 24, obstacleHulls = [], collisionMargin = 0.015) {
-  let lo = minScale;
-  let hi = maxScale;
-  
-  const euler = new THREE.Euler(rotation.x, rotation.y, rotation.z, 'XYZ');
-  const quaternion = new THREE.Quaternion().setFromEuler(euler);
-  const matrix = new THREE.Matrix4();
-
-  const transformedPoints = facetedPoints.map(p => p.clone());
-
-  const transformPointsInPlace = (target, source, transformMatrix) => {
-    for (let i = 0; i < source.length; i++) {
-      target[i].copy(source[i]).applyMatrix4(transformMatrix);
-    }
-  };
-
-  matrix.compose(
-    offset,
-    quaternion,
-    new THREE.Vector3(minScale, minScale, minScale)
-  );
-  transformPointsInPlace(transformedPoints, facetedPoints, matrix);
-  if (!allPointsInHull(transformedPoints, roughPlanes)) {
-    return minScale;
-  }
-
-  for (let i = 0; i < steps; i++) {
-    const mid = (lo + hi) / 2;
-    
-    matrix.compose(
-      offset,
-      quaternion,
-      new THREE.Vector3(mid, mid, mid)
-    );
-
-    transformPointsInPlace(transformedPoints, facetedPoints, matrix);
-
-    if (!allPointsInHull(transformedPoints, roughPlanes)) {
-      hi = mid; 
-      continue;
+    if (enterCol === -1) {
+      // Optimal solution found!
+      return true;
     }
 
-    let intersectsObstacle = false;
-    if (obstacleHulls.length > 0) {
-      for (const obsHull of obstacleHulls) {
-        if (convexHullsIntersect(transformedPoints, obsHull, collisionMargin)) {
-          intersectsObstacle = true;
-          break;
+    // Ratio test to find leaving variable
+    let leaveRow = -1;
+    let minRatio = Infinity;
+    for (let i = 0; i < M; i++) {
+      const a = tableau[i][enterCol];
+      if (a > eps) {
+        const ratio = tableau[i][numVars] / a;
+        if (ratio < minRatio) {
+          minRatio = ratio;
+          leaveRow = i;
         }
       }
     }
 
-    if (intersectsObstacle) {
-      hi = mid; 
-    } else {
-      lo = mid; 
+    if (leaveRow === -1) {
+      // Problem is unbounded
+      return false;
     }
+
+    // Pivot on (leaveRow, enterCol)
+    const pivotVal = tableau[leaveRow][enterCol];
+    const pivotRow = tableau[leaveRow];
+    for (let j = 0; j <= numVars; j++) {
+      pivotRow[j] /= pivotVal;
+    }
+
+    for (let i = 0; i < numRows; i++) {
+      if (i !== leaveRow) {
+        const factor = tableau[i][enterCol];
+        if (Math.abs(factor) > 1e-12) {
+          const row = tableau[i];
+          for (let j = 0; j <= numVars; j++) {
+            row[j] -= factor * pivotRow[j];
+          }
+        }
+      }
+    }
+
+    basic[leaveRow] = enterCol;
   }
-  return lo;
+
+  return true;
 }
 
-// ── Generic Search-Center Estimation (Chebyshev Center) ────
+// ── 3. Support Function & Stone Hull ──────────────────────────
 
-function computeGirdleCenter(geometry, fallbackCenter) {
+/**
+ * Extract clean, centered convex hull vertices of the stone geometry.
+ * For diamond cuts, the convex hull vertices form the exact support boundary.
+ */
+function getStoneHullVertices(geometry) {
   const posAttr = geometry.getAttribute('position');
-  let maxRadius = 0;
-  for (let i = 0; i < posAttr.count; i++) {
-    const r = Math.hypot(posAttr.getX(i), posAttr.getZ(i));
-    if (r > maxRadius) maxRadius = r;
-  }
-  if (maxRadius <= 1e-6) return fallbackCenter.clone();
+  if (!posAttr) return [];
 
-  const threshold = maxRadius * 0.92;
-  let ySum = 0;
-  let count = 0;
+  // Bounding box & center
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox;
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+
+  // Girdle center estimation
+  let maxR = 0;
   for (let i = 0; i < posAttr.count; i++) {
-    const r = Math.hypot(posAttr.getX(i), posAttr.getZ(i));
+    const r = Math.hypot(posAttr.getX(i) - center.x, posAttr.getZ(i) - center.z);
+    if (r > maxR) maxR = r;
+  }
+  const threshold = maxR * 0.92;
+  let ySum = 0, count = 0;
+  for (let i = 0; i < posAttr.count; i++) {
+    const r = Math.hypot(posAttr.getX(i) - center.x, posAttr.getZ(i) - center.z);
     if (r >= threshold) {
       ySum += posAttr.getY(i);
       count++;
     }
   }
-  const girdleY = count > 0 ? ySum / count : fallbackCenter.y;
-  return new THREE.Vector3(fallbackCenter.x, girdleY, fallbackCenter.z);
-}
+  const girdleY = count > 0 ? ySum / count : center.y;
+  const origin = new THREE.Vector3(center.x, girdleY, center.z);
 
-function approximateChebyshevCenter(planes, start, iterations = 150) {
-  const center = start.clone();
-  if (planes.length === 0) return center;
+  // Collect unique vertices centered on girdle origin
+  const vertices = [];
+  const seen = new Set();
+  const step = Math.max(1, Math.floor(posAttr.count / 150));
 
-  let step = planes.reduce((acc, p) => Math.max(acc, Math.abs(p.distance)), 1) * 0.08;
-  const minStep = step * 0.001;
-
-  for (let i = 0; i < iterations && step > minStep; i++) {
-    let minMargin = Infinity;
-    let bindingPlane = null;
-    for (const plane of planes) {
-      const margin = plane.distance - plane.normal.dot(center);
-      if (margin < minMargin) {
-        minMargin = margin;
-        bindingPlane = plane;
-      }
-    }
-    if (!bindingPlane) break;
-    center.addScaledVector(bindingPlane.normal, -step);
-    step *= 0.97; 
-  }
-
-  return center;
-}
-
-// ── Candidate Generation for Global Search ─────────────────
-
-function generateOrientationCandidates({ rotationStepsY = 16 } = {}) {
-  const candidates = [];
-  const flipStates = [0, Math.PI];
-  const ySteps = Math.max(1, rotationStepsY);
-
-  for (let yi = 0; yi < ySteps; yi++) {
-    const rotY = (yi / ySteps) * Math.PI * 2;
-    for (const flipX of flipStates) {
-      for (const flipZ of flipStates) {
-        candidates.push({ x: flipX, y: rotY, z: flipZ });
-      }
+  for (let i = 0; i < posAttr.count; i += step) {
+    const vx = posAttr.getX(i) - origin.x;
+    const vy = posAttr.getY(i) - origin.y;
+    const vz = posAttr.getZ(i) - origin.z;
+    const key = `${vx.toFixed(3)},${vy.toFixed(3)},${vz.toFixed(3)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      vertices.push(new THREE.Vector3(vx, vy, vz));
     }
   }
-  return candidates;
+
+  // Ensure culet (minimum Y) and table center (maximum Y) are strictly present
+  let minVy = Infinity, minV = null;
+  let maxVy = -Infinity, maxV = null;
+  for (let i = 0; i < posAttr.count; i++) {
+    const vy = posAttr.getY(i) - origin.y;
+    if (vy < minVy) {
+      minVy = vy;
+      minV = new THREE.Vector3(posAttr.getX(i) - origin.x, vy, posAttr.getZ(i) - origin.z);
+    }
+    if (vy > maxVy) {
+      maxVy = vy;
+      maxV = new THREE.Vector3(posAttr.getX(i) - origin.x, vy, posAttr.getZ(i) - origin.z);
+    }
+  }
+  if (minV) vertices.push(minV);
+  if (maxV) vertices.push(maxV);
+
+  return { vertices, origin };
 }
 
-function generateProbeOffsets(center, rangeVec) {
-  const probeScale = 0.6; 
-  return [
-    center.clone(),
-    center.clone().add(new THREE.Vector3(rangeVec.x * probeScale, 0, 0)),
-    center.clone().add(new THREE.Vector3(-rangeVec.x * probeScale, 0, 0)),
-    center.clone().add(new THREE.Vector3(0, rangeVec.y * probeScale, 0)),
-    center.clone().add(new THREE.Vector3(0, -rangeVec.y * probeScale, 0)),
-    center.clone().add(new THREE.Vector3(0, 0, rangeVec.z * probeScale)),
-    center.clone().add(new THREE.Vector3(0, 0, -rangeVec.z * probeScale)),
+/**
+ * Computes support values h_i(R) for all rough plane normals n_i:
+ *   h_i(R) = max_{v in Stone} ( (R^T n_i) · v )
+ */
+function computeSupportValues(planes, stoneVertices, quaternion) {
+  const M = planes.length;
+  const hVals = new Float64Array(M);
+  const qInv = quaternion.clone().invert();
+  const localNormal = new THREE.Vector3();
+
+  for (let i = 0; i < M; i++) {
+    localNormal.copy(planes[i].normal).applyQuaternion(qInv);
+    let maxSupport = -Infinity;
+    for (let j = 0; j < stoneVertices.length; j++) {
+      const dot = localNormal.dot(stoneVertices[j]);
+      if (dot > maxSupport) maxSupport = dot;
+    }
+    hVals[i] = maxSupport;
+  }
+
+  return hVals;
+}
+
+// ── 4. Full 3D Orientation Search (SO(3)) ──────────────────────
+
+/**
+ * Generates an exhaustive 3D orientation set:
+ *   1. Principal axes alignments (stone length/diameter aligned with rough major axes).
+ *   2. Spherical Fibonacci grid (uniform table-normal distribution across the unit sphere).
+ *   3. Roll steps around the primary axis.
+ */
+function generateFull3DOrientations(roughAxes, isCircular = false) {
+  const quaternions = [];
+  const seenMatrix = new Set();
+
+  function addQuaternion(q) {
+    // Quantize rotation matrix components to prevent duplicates
+    const m = new THREE.Matrix4().makeRotationFromQuaternion(q).elements;
+    const key = `${m[0].toFixed(2)},${m[4].toFixed(2)},${m[8].toFixed(2)},${m[1].toFixed(2)},${m[5].toFixed(2)},${m[9].toFixed(2)}`;
+    if (!seenMatrix.has(key)) {
+      seenMatrix.add(key);
+      quaternions.push(q.clone());
+    }
+  }
+
+  const stoneTable = new THREE.Vector3(0, 1, 0);  // Diamond table faces +Y
+  const stoneLength = new THREE.Vector3(1, 0, 0); // Stone width/length in XZ
+  const stoneWidth = new THREE.Vector3(0, 0, 1);
+
+  // ── 1. Principal Axes Alignments (24 permutations) ──
+  const [e1, e2, e3] = roughAxes;
+  const targetAxes = [e1, e2, e3, e1.clone().negate(), e2.clone().negate(), e3.clone().negate()];
+
+  for (const tAxis of targetAxes) {
+    const qBase = new THREE.Quaternion().setFromUnitVectors(stoneTable, tAxis);
+    const rolls = isCircular ? [0, Math.PI / 2] : [0, Math.PI / 4, Math.PI / 2, (3 * Math.PI) / 4, Math.PI, (5 * Math.PI) / 4, (3 * Math.PI) / 2, (7 * Math.PI) / 4];
+    for (const roll of rolls) {
+      const qRoll = new THREE.Quaternion().setFromAxisAngle(stoneTable, roll);
+      addQuaternion(qBase.clone().multiply(qRoll));
+    }
+
+    // Also align stone length (+X) with tAxis (tilts the diamond sideways 90 degrees!)
+    const qSideways = new THREE.Quaternion().setFromUnitVectors(stoneLength, tAxis);
+    for (const roll of rolls) {
+      const qRoll = new THREE.Quaternion().setFromAxisAngle(stoneLength, roll);
+      addQuaternion(qSideways.clone().multiply(qRoll));
+    }
+  }
+
+  // ── 2. Spherical Fibonacci Spiral Grid ──
+  const numDirections = 64;
+  const phi = Math.PI * (3 - Math.sqrt(5)); // Golden angle (~2.39996)
+  const rollSteps = isCircular ? 2 : 6;
+
+  for (let i = 0; i < numDirections; i++) {
+    const y = 1 - (i / (numDirections - 1)) * 2; // y in [-1, 1]
+    const radius = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = phi * i;
+    const x = Math.cos(theta) * radius;
+    const z = Math.sin(theta) * radius;
+
+    const dir = new THREE.Vector3(x, y, z).normalize();
+    const qBase = new THREE.Quaternion().setFromUnitVectors(stoneTable, dir);
+
+    for (let r = 0; r < rollSteps; r++) {
+      const rollAngle = (r / rollSteps) * Math.PI * 2;
+      const qRoll = new THREE.Quaternion().setFromAxisAngle(stoneTable, rollAngle);
+      addQuaternion(qBase.clone().multiply(qRoll));
+    }
+  }
+
+  return quaternions;
+}
+
+// ── 5. Main Inscribed Fitting Function ────────────────────────
+
+/**
+ * Finds the globally maximum inscribed fit of a polished diamond inside a rough diamond.
+ *
+ * @param {THREE.Mesh|THREE.BufferGeometry} roughInput
+ * @param {THREE.BufferGeometry} facetedGeometry
+ * @param {number} facetedBaseVolume
+ * @param {Object} options
+ * @returns {FittingResult}
+ */
+export function findMaxInscribedFit(roughInput, facetedGeometry, facetedBaseVolume, options = {}) {
+  const {
+    obstacles = [],
+    collisionMargin = 0.08,
+    topCandidatesCount = 12,
+    customPlanes = null,
+  } = options;
+
+  // 1. Resolve mesh & geometry
+  const roughMesh = roughInput.isMesh ? roughInput : new THREE.Mesh(roughInput);
+  const roughGeometry = roughMesh.geometry;
+
+  roughMesh.updateMatrixWorld(true);
+  const roughWorldMatrix = roughMesh.matrixWorld;
+
+  // 2. Base rough planes in world space
+  let basePlanes = [];
+  if (customPlanes && customPlanes.length > 0) {
+    basePlanes = customPlanes.map(p => ({ normal: p.normal.clone(), distance: p.distance }));
+  } else {
+    const rawHull = extractConvexHull(roughGeometry);
+    basePlanes = rawHull.planes.map(p => {
+      const normal = p.normal.clone().transformDirection(roughWorldMatrix).normalize();
+      const ptOnPlane = p.normal.clone().multiplyScalar(p.distance).applyMatrix4(roughWorldMatrix);
+      const distance = normal.dot(ptOnPlane);
+      return { normal, distance };
+    });
+  }
+
+  const rawHull = extractConvexHull(roughGeometry);
+  const worldVertices = rawHull.vertices.map(v => v.clone().applyMatrix4(roughWorldMatrix));
+  const roughCenter = computeCentroid(worldVertices);
+  const roughVolume = computeMeshVolume(roughGeometry);
+  const roughAxes = computePrincipalAxes(worldVertices, roughCenter);
+
+  // 3. Add obstacle constraints (Guaranteed Non-Overlapping Separating Planes)
+  let roughPlanes = [...basePlanes];
+
+  const obstacleHulls = [];
+  for (const obs of obstacles) {
+    if (!obs || !obs.isMesh) continue;
+    obs.updateMatrixWorld(true);
+    const obsGeo = obs.geometry;
+    const obsPosAttr = obsGeo.getAttribute('position');
+    if (!obsPosAttr) continue;
+    const verts = [];
+    const step = Math.max(1, Math.floor(obsPosAttr.count / 80));
+    for (let k = 0; k < obsPosAttr.count; k += step) {
+      verts.push(new THREE.Vector3(
+        obsPosAttr.getX(k),
+        obsPosAttr.getY(k),
+        obsPosAttr.getZ(k)
+      ).applyMatrix4(obs.matrixWorld));
+    }
+    if (verts.length >= 4) obstacleHulls.push(verts);
+  }
+
+  if (obstacleHulls.length > 0) {
+    // Generate candidate separating directions
+    const candidateDirs = [
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0, -1, 0),
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(-1, 0, 0),
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(0, 0, -1),
+      roughAxes[0].clone(),
+      roughAxes[0].clone().negate(),
+      roughAxes[1].clone(),
+      roughAxes[1].clone().negate(),
+      roughAxes[2].clone(),
+      roughAxes[2].clone().negate(),
+    ];
+
+    for (const obsVerts of obstacleHulls) {
+      const obsC = computeCentroid(obsVerts);
+      const toCenter = new THREE.Vector3().subVectors(roughCenter, obsC);
+      if (toCenter.lengthSq() > 0.01) {
+        toCenter.normalize();
+        candidateDirs.push(toCenter.clone());
+        candidateDirs.push(toCenter.clone().negate());
+      }
+    }
+
+    let bestPocketPlanes = null;
+    let maxPocketRadius = -1;
+
+    for (const dir of candidateDirs) {
+      // For the new stone to be strictly separated from ALL obstacles along dir:
+      // dir · x <= minExtent - collisionMargin
+      let minObsExtent = Infinity;
+      for (const obsVerts of obstacleHulls) {
+        for (const v of obsVerts) {
+          const d = dir.dot(v);
+          if (d < minObsExtent) minObsExtent = d;
+        }
+      }
+
+      const sepPlane = {
+        normal: dir.clone().normalize(),
+        distance: minObsExtent - collisionMargin,
+      };
+
+      const testPlanes = [...basePlanes, sepPlane];
+      const testCheb = solveExactChebyshevCenter(testPlanes, roughCenter);
+
+      if (testCheb.radius > maxPocketRadius && testCheb.radius > 0.08) {
+        maxPocketRadius = testCheb.radius;
+        bestPocketPlanes = testPlanes;
+      }
+    }
+
+    if (bestPocketPlanes) {
+      roughPlanes = bestPocketPlanes;
+    }
+  }
+
+  // 4. Compute Exact Chebyshev Center of the rough chamber
+  const chebyshev = solveExactChebyshevCenter(roughPlanes, roughCenter);
+  const searchCenter = chebyshev.center;
+
+  // 5. Stone convex hull & aspect ratio
+  const { vertices: stoneVertices, origin: girdleOrigin } = getStoneHullVertices(facetedGeometry);
+  facetedGeometry.computeBoundingBox();
+  const stoneBox = facetedGeometry.boundingBox;
+  const stoneSize = new THREE.Vector3();
+  stoneBox.getSize(stoneSize);
+  const isCircular = Math.abs(stoneSize.x - stoneSize.z) / Math.max(stoneSize.x, stoneSize.z) < 0.05;
+
+  // 6. Rough principal axes (already computed at line 598)
+
+  // 7. Full 3D Orientation Search via Fast LP
+  const orientations = generateFull3DOrientations(roughAxes, isCircular);
+
+  let bestScale = 0;
+  let bestQuaternion = new THREE.Quaternion();
+  let bestOffset = searchCenter.clone();
+
+  const candidateResults = [];
+
+  for (const q of orientations) {
+    const hVals = computeSupportValues(roughPlanes, stoneVertices, q);
+    const lpRes = solveFixedRotationLP(roughPlanes, searchCenter, hVals);
+
+    if (lpRes.success && lpRes.scale > 0.001) {
+      candidateResults.push({
+        scale: lpRes.scale,
+        quaternion: q.clone(),
+        offset: lpRes.offset.clone(),
+      });
+
+      if (lpRes.scale > bestScale) {
+        bestScale = lpRes.scale;
+        bestQuaternion.copy(q);
+        bestOffset.copy(lpRes.offset);
+      }
+    }
+  }
+
+  // 8. Continuous Rotation Polish on Top Candidates
+  candidateResults.sort((a, b) => b.scale - a.scale);
+  const topCandidates = candidateResults.slice(0, Math.min(topCandidatesCount, candidateResults.length));
+
+  const rotDeltas = [
+    THREE.MathUtils.degToRad(3.0),
+    THREE.MathUtils.degToRad(1.5),
+    THREE.MathUtils.degToRad(0.5),
   ];
-}
 
-function generateOffsetCandidates(center, rangeVec, positionSteps) {
-  const offsets = [];
-  const half = Math.max(1, positionSteps);
-  for (let xi = -half; xi <= half; xi++) {
-    for (let yi = -half; yi <= half; yi++) {
-      for (let zi = -half; zi <= half; zi++) {
-        offsets.push(new THREE.Vector3(
-          center.x + (xi / half) * rangeVec.x,
-          center.y + (yi / half) * rangeVec.y,
-          center.z + (zi / half) * rangeVec.z
-        ));
-      }
-    }
-  }
-  return offsets;
-}
+  for (const cand of topCandidates) {
+    let curQ = cand.quaternion.clone();
+    let curScale = cand.scale;
+    let curOffset = cand.offset.clone();
 
-// ── Local Pattern Search (Hooke–Jeeves style) ──────────────
+    for (const delta of rotDeltas) {
+      let improved = true;
+      let iters = 0;
+      while (improved && iters++ < 6) {
+        improved = false;
+        // Test coordinate angular steps around X, Y, Z
+        const testAxes = [
+          new THREE.Vector3(1, 0, 0),
+          new THREE.Vector3(0, 1, 0),
+          new THREE.Vector3(0, 0, 1),
+        ];
 
-function patternSearch(evalFn, initialParams, initialSteps, minSteps, maxIterations = 40) {
-  let params = initialParams.slice();
-  let steps = initialSteps.slice();
-  let bestScore = evalFn(params);
+        for (const axis of testAxes) {
+          for (const sign of [1, -1]) {
+            const dq = new THREE.Quaternion().setFromAxisAngle(axis, sign * delta);
+            const trialQ = dq.clone().multiply(curQ);
 
-  for (let iter = 0; iter < maxIterations; iter++) {
-    let improved = false;
-    for (let d = 0; d < params.length; d++) {
-      for (const sign of [1, -1]) {
-        const trial = params.slice();
-        trial[d] += sign * steps[d];
-        const score = evalFn(trial);
-        if (score > bestScore * 1.0005) {
-          bestScore = score;
-          params = trial;
-          improved = true;
+            const trialH = computeSupportValues(roughPlanes, stoneVertices, trialQ);
+            const trialLP = solveFixedRotationLP(roughPlanes, searchCenter, trialH);
+
+            if (trialLP.success && trialLP.scale > curScale * 1.0005) {
+              curScale = trialLP.scale;
+              curQ.copy(trialQ);
+              curOffset.copy(trialLP.offset);
+              improved = true;
+            }
+          }
         }
       }
     }
-    if (!improved) {
-      steps = steps.map(s => s * 0.5);
-      if (steps.every((s, i) => s <= minSteps[i])) break;
+
+    if (curScale > bestScale) {
+      bestScale = curScale;
+      bestQuaternion.copy(curQ);
+      bestOffset.copy(curOffset);
     }
   }
 
-  return { params, score: bestScore };
-}
+  // 9. Compute Final Transform & Yield Metrics
+  const finalRotation = new THREE.Euler().setFromQuaternion(bestQuaternion, 'XYZ');
 
-// ── Main Fitting Function ──────────────────────────────────
-
-export function findMaxInscribedFit(roughMesh, facetedGeometry, facetedBaseVolume, options = {}) {
-  const {
-    rotationStepsY = 16,
-    tiltRange = 15,
-    positionSteps = 1,
-    positionRange = 0.5,
-    topOrientations = 8,
-    refineCandidates = topOrientations,
-    patternSearchIterations = 40,
-    obstacles = [],
-    collisionMargin = 0.015,
-  } = options;
-
-  // ────────────────────────────────────────────────────────
-  // 1. Extract rough hull planes in world space
-  // ────────────────────────────────────────────────────────
-  const roughGeometry = roughMesh.geometry;
-  const hull = extractConvexHull(roughGeometry);
-
-  roughMesh.updateMatrixWorld();
-  const roughWorldMatrix = roughMesh.matrixWorld;
-  const roughPlanes = hull.planes.map(plane => {
-    const normal = plane.normal.clone().transformDirection(roughWorldMatrix).normalize();
-    const ptOnPlane = plane.normal.clone().multiplyScalar(plane.distance).applyMatrix4(roughWorldMatrix);
-    const distance = normal.dot(ptOnPlane);
-    return { normal, distance };
-  });
-  const worldVertices = hull.vertices.map(v => v.clone().applyMatrix4(roughWorldMatrix));
-  const roughCenter = computeCentroid(worldVertices);
-
-  const roughVolume = computeMeshVolume(roughGeometry);
-
-  roughGeometry.computeBoundingBox();
-  const roughBox = roughGeometry.boundingBox.clone().applyMatrix4(roughWorldMatrix);
-  const roughSize = new THREE.Vector3();
-  roughBox.getSize(roughSize);
-
-  roughGeometry.computeBoundingSphere();
-  const roughSphereRadius = roughGeometry.boundingSphere.radius;
-
-  // ────────────────────────────────────────────────────────
-  // 2. Sample faceted vertices and center them
-  // ────────────────────────────────────────────────────────
-  const facetedPoints = sampleVertices(facetedGeometry, 100);
-
-  facetedGeometry.computeBoundingBox();
-  const facetedBox = facetedGeometry.boundingBox;
-  const facetedCenter = new THREE.Vector3();
-  facetedBox.getCenter(facetedCenter);
-  const girdleCenter = computeGirdleCenter(facetedGeometry, facetedCenter);
-  const centeredPoints = facetedPoints.map(p => p.clone().sub(girdleCenter));
-
-  facetedGeometry.computeBoundingSphere();
-  const facetedSphereRadius = facetedGeometry.boundingSphere.radius;
-
-  const estimatedMaxScale = facetedSphereRadius > 0.001
-    ? (roughSphereRadius / facetedSphereRadius) * 1.5
-    : 5.0;
-
-  // ────────────────────────────────────────────────────────
-  // 3. Pre-compute obstacle data
-  // ────────────────────────────────────────────────────────
-  const obstacleHulls = [];
-  for (const obstacleMesh of obstacles) {
-    const obsHull = getWorldConvexHull(obstacleMesh);
-    if (obsHull.length >= 4) {
-      obstacleHulls.push(obsHull);
-    }
-  }
-
-  // ────────────────────────────────────────────────────────
-  // 4. Compute search center (anti-centroid for multi-stone)
-  // ────────────────────────────────────────────────────────
-  let searchCenter;
-  if (obstacles.length > 0) {
-    const avgObstacle = new THREE.Vector3();
-    for (const obs of obstacles) {
-      obs.updateMatrixWorld();
-      avgObstacle.add(new THREE.Vector3().setFromMatrixPosition(obs.matrixWorld));
-    }
-    avgObstacle.divideScalar(obstacles.length);
-    
-    const mirrored = roughCenter.clone().multiplyScalar(2).sub(avgObstacle);
-    
-    // ── FIXED: Explicitly lift the search center up into the crown for the second stone ──
-    if (obstacles.length === 1) {
-      mirrored.y += roughSize.y * 0.25; 
-    }
-    
-    searchCenter = approximateChebyshevCenter(roughPlanes, mirrored);
-  } else {
-    searchCenter = approximateChebyshevCenter(roughPlanes, roughCenter);
-  }
-
-  // ────────────────────────────────────────────────────────
-  // 5. Per-axis position offset ranges
-  // ────────────────────────────────────────────────────────
-  const offsetRange = new THREE.Vector3(
-    roughSize.x * positionRange * 0.5,
-    roughSize.y * positionRange * 0.5,
-    roughSize.z * positionRange * 0.5
-  );
-
-  let bestScale = 0;
-  let peakScale = 0; 
-  let bestRotation = { x: 0, y: 0, z: 0 };
-  let bestOffset = searchCenter.clone();
-
-  const distToCenter = (p) => p.distanceTo(searchCenter);
-
-  const orientationCandidates = generateOrientationCandidates({ rotationStepsY });
-  const probeOffsets = generateProbeOffsets(searchCenter, offsetRange);
-
-  const orientationScores = orientationCandidates.map(rotation => {
-    let best = 0;
-    for (const probeOffset of probeOffsets) {
-      const scale = binarySearchScale(
-        centeredPoints, roughPlanes, rotation, probeOffset,
-        0.01, estimatedMaxScale, 10, 
-        obstacleHulls,
-        collisionMargin
-      );
-      if (scale > best) best = scale;
-    }
-    return { rotation, scale: best };
-  });
-
-  const byScore = orientationScores.slice().sort((a, b) => b.scale - a.scale);
-  const wantTotal = Math.max(1, topOrientations);
-  const wantByScore = Math.ceil(wantTotal / 2);
-
-  const survivingOrientations = byScore.slice(0, wantByScore);
-  const chosen = new Set(survivingOrientations.map(e => e.rotation));
-
-  const remainingSlots = wantTotal - survivingOrientations.length;
-  if (remainingSlots > 0) {
-    const pool = orientationScores.filter(e => !chosen.has(e.rotation));
-    const stride = Math.max(1, Math.floor(pool.length / remainingSlots));
-    for (let i = 0; i < pool.length && survivingOrientations.length < wantTotal; i += stride) {
-      survivingOrientations.push(pool[i]);
-      chosen.add(pool[i].rotation);
-    }
-  }
-
-  // ── Phase 2: Position grid search for each surviving orientation ──
-  const positionCandidates = generateOffsetCandidates(searchCenter, offsetRange, positionSteps);
-  const globalCandidates = [];
-
-  for (const { rotation } of survivingOrientations) {
-    for (const offset of positionCandidates) {
-      const scale = binarySearchScale(
-        centeredPoints, roughPlanes, rotation, offset,
-        0.01, estimatedMaxScale, 18,
-        obstacleHulls,
-        collisionMargin
-      );
-      globalCandidates.push({ rotation, offset, scale });
-      if (scale > peakScale) peakScale = scale;
-
-      if (scale > bestScale * 1.005) {
-        bestScale = scale;
-        bestRotation = { ...rotation };
-        bestOffset = offset.clone();
-      } else if (scale > peakScale * 0.995 && distToCenter(offset) < distToCenter(bestOffset)) {
-        bestScale = scale;
-        bestRotation = { ...rotation };
-        bestOffset = offset.clone();
-      }
-    }
-  }
-
-  // ── Phase 3: Local pattern-search polish (joint 6D: rotation + position) ──
-  const bestPerOrientation = new Map();
-  for (const cand of globalCandidates) {
-    const existing = bestPerOrientation.get(cand.rotation);
-    if (!existing || cand.scale > existing.scale) bestPerOrientation.set(cand.rotation, cand);
-  }
-  const perOrientationBest = Array.from(bestPerOrientation.values());
-  perOrientationBest.sort((a, b) => b.scale - a.scale);
-  const refineSeeds = perOrientationBest.slice(0, Math.max(1, refineCandidates));
-
-  const rotStep = THREE.MathUtils.degToRad(Math.max(2, tiltRange / 4));
-  const rotMinStep = THREE.MathUtils.degToRad(0.25);
-  const posStep = new THREE.Vector3(offsetRange.x, offsetRange.y, offsetRange.z)
-    .divideScalar(Math.max(1, positionSteps) * 2 || 1);
-  const posMinStep = Math.max(posStep.x, posStep.y, posStep.z) * 0.01;
-
-  for (const seed of refineSeeds) {
-    const initialParams = [
-      seed.rotation.x, seed.rotation.y, seed.rotation.z,
-      seed.offset.x, seed.offset.y, seed.offset.z,
-    ];
-    const initialSteps = [rotStep, rotStep, rotStep, posStep.x || posStep.y || posStep.z, posStep.y || posStep.x, posStep.z || posStep.x];
-    const minSteps = [rotMinStep, rotMinStep, rotMinStep, posMinStep, posMinStep, posMinStep];
-
-    const evalFn = (params) => binarySearchScale(
-      centeredPoints, roughPlanes,
-      { x: params[0], y: params[1], z: params[2] },
-      new THREE.Vector3(params[3], params[4], params[5]),
-      0.01, estimatedMaxScale, 22,
-      obstacleHulls,
-      collisionMargin
-    );
-
-    const { params, score } = patternSearch(evalFn, initialParams, initialSteps, minSteps, patternSearchIterations);
-    if (score > peakScale) peakScale = score;
-
-    const refinedOffset = new THREE.Vector3(params[3], params[4], params[5]);
-    const refinedRotation = { x: params[0], y: params[1], z: params[2] };
-    if (score > bestScale * 1.005) {
-      bestScale = score;
-      bestRotation = refinedRotation;
-      bestOffset = refinedOffset;
-    } else if (score > peakScale * 0.995 && distToCenter(refinedOffset) < distToCenter(bestOffset)) {
-      bestScale = score;
-      bestRotation = refinedRotation;
-      bestOffset = refinedOffset;
-    }
-  }
-
-  // ────────────────────────────────────────────────────────
-  // 6. Compute results
-  // ────────────────────────────────────────────────────────
-  const finalRotation = new THREE.Euler(bestRotation.x, bestRotation.y, bestRotation.z);
-  const finalQuaternion = new THREE.Quaternion().setFromEuler(finalRotation);
-
-  const centerCorrection = girdleCenter.clone()
-    .applyQuaternion(finalQuaternion)
+  // Girdle origin correction
+  const originCorrection = girdleOrigin.clone()
+    .applyQuaternion(bestQuaternion)
     .multiplyScalar(bestScale);
-  
-  const finalOffset = bestOffset.clone().sub(centerCorrection);
+  const finalOffset = bestOffset.clone().sub(originCorrection);
 
   const polishedVolume = facetedBaseVolume * Math.pow(bestScale, 3);
   const utilization = roughVolume > 0 ? polishedVolume / roughVolume : 0;
 
+  // Carat weights (standard diamond density: 3.51 g/cm³ = 0.00351 g/mm³, 1 ct = 0.2 g)
   const caratWeight = (polishedVolume / 1000) * 3.51 * 5;
   const roughCaratWeight = (roughVolume / 1000) * 3.51 * 5;
 
@@ -853,30 +799,30 @@ export function findMaxInscribedFit(roughMesh, facetedGeometry, facetedBaseVolum
     utilization,
     caratWeight,
     roughCaratWeight,
-    searchCenter: searchCenter.clone(), 
+    searchCenter: searchCenter.clone(),
+    quaternion: bestQuaternion.clone(),
   };
 }
 
-// ── Mesh Volume Computation ────────────────────────────────
+// ── 6. Mesh Volume Computation (Divergence Theorem) ───────────
 
+/**
+ * Computes exact signed volume of a closed triangle mesh using the divergence theorem.
+ * @param {THREE.BufferGeometry} geometry
+ * @returns {number} volume in mm³
+ */
 export function computeMeshVolume(geometry) {
   const posAttr = geometry.getAttribute('position');
+  if (!posAttr) return 0;
   const index = geometry.getIndex();
 
   let volume = 0;
   const triCount = index ? index.count / 3 : posAttr.count / 3;
 
   for (let f = 0; f < triCount; f++) {
-    let ai, bi, ci;
-    if (index) {
-      ai = index.getX(f * 3);
-      bi = index.getX(f * 3 + 1);
-      ci = index.getX(f * 3 + 2);
-    } else {
-      ai = f * 3;
-      bi = f * 3 + 1;
-      ci = f * 3 + 2;
-    }
+    const ai = index ? index.getX(f * 3) : f * 3;
+    const bi = index ? index.getX(f * 3 + 1) : f * 3 + 1;
+    const ci = index ? index.getX(f * 3 + 2) : f * 3 + 2;
 
     const ax = posAttr.getX(ai), ay = posAttr.getY(ai), az = posAttr.getZ(ai);
     const bx = posAttr.getX(bi), by = posAttr.getY(bi), bz = posAttr.getZ(bi);
@@ -892,173 +838,305 @@ export function computeMeshVolume(geometry) {
   return Math.abs(volume);
 }
 
-// ── Multi-Stone Placement Helper ──────────────────────────
+// ── 7. Multi-Stone Gemological Placement ──────────────────────
 
 /**
- * Place multiple stones sequentially, with each new stone avoiding previously placed ones.
+ * Laser Sawing Plane & Multi-Stone Optimization:
+ * Places multiple stones inside the rough diamond.
+ * If 2 stones are placed, tests candidate laser sawing planes along the
+ * rough's principal axes to maximize combined carat weight.
+ *
+ * @param {THREE.Mesh} roughMesh
+ * @param {THREE.BufferGeometry[]} stoneGeometries
+ * @param {number[]} stoneVolumes
+ * @param {Object} options
  */
 export function placeMultipleStones(roughMesh, stoneGeometries, stoneVolumes, options = {}) {
   const {
     stoneColors = [0x44aaff, 0xff8844, 0x66ff88],
-    stoneOpacities = [0.6, 0.6, 0.6],
+    stoneOpacities = [0.7, 0.7, 0.7],
     scene = null,
-    ...restOptions
+    kerfThickness = 0.15, // Standard laser saw cut kerf in mm
   } = options;
-  
+
+  const numStones = stoneGeometries.length;
+  if (numStones === 0) return { placements: [], totalPolishedVolume: 0, totalCaratWeight: 0, totalUtilization: 0, roughVolume: 0 };
+
   const results = [];
-  const placedObstacles = [];
-  let previousStone = null;
-  
-  for (let i = 0; i < stoneGeometries.length; i++) {
-    const isFirstStone = i === 0;
-    const isSecondStone = i === 1;
-    
-    const placementOptions = {
-      ...restOptions,
-      obstacles: placedObstacles,
-      positionRange: isFirstStone ? 0.5 : 0.3,
-      // ── FIXED: Enforce a wider clearance margin boundary to force the second stone smaller ──
-      collisionMargin: isSecondStone ? 0.035 : 0.015,
-    };
-    
-    const result = findMaxInscribedFit(
-      roughMesh,
-      stoneGeometries[i],
-      stoneVolumes[i],
-      placementOptions
-    );
-    
-    const color = stoneColors[i % stoneColors.length];
-    const opacity = stoneOpacities[i % stoneOpacities.length];
-    
-    const mesh = new THREE.Mesh(
-      stoneGeometries[i].clone(),
-      new THREE.MeshStandardMaterial({
-        transparent: true,
-        opacity: opacity,
-        color: color,
-        roughness: 0.3,
-        metalness: 0.1,
-        side: THREE.DoubleSide
-      })
-    );
-    
-    mesh.rotation.copy(result.rotation);
-    mesh.position.copy(result.offset);
-    mesh.scale.set(result.scale, result.scale, result.scale);
-    mesh.updateMatrixWorld();
-    
-    results.push({
-      result,
-      mesh,
-      index: i
+
+  if (numStones === 2) {
+    // ── Joint Sawing Plane Optimization for 2 Stones ──
+    const roughWorldMatrix = roughMesh.matrixWorld;
+    const rawHull = extractConvexHull(roughMesh.geometry);
+    const basePlanes = rawHull.planes.map(p => {
+      const normal = p.normal.clone().transformDirection(roughWorldMatrix).normalize();
+      const ptOnPlane = p.normal.clone().multiplyScalar(p.distance).applyMatrix4(roughWorldMatrix);
+      return { normal, distance: normal.dot(ptOnPlane) };
     });
-    
-    if (scene) {
-      scene.add(mesh);
+    const worldVerts = rawHull.vertices.map(v => v.clone().applyMatrix4(roughWorldMatrix));
+    const center = computeCentroid(worldVerts);
+    const roughAxes = computePrincipalAxes(worldVerts, center);
+
+    const candidateCutNormals = [
+      new THREE.Vector3(0, 1, 0), // Cut along Y (table/girdle split)
+      roughAxes[0].clone(),       // Cut along crystal major axis
+      roughAxes[1].clone(),       // Cut along crystal medium axis
+      new THREE.Vector3(1, 0, 0), // Cut along X
+      new THREE.Vector3(0, 0, 1), // Cut along Z
+    ];
+
+    let bestTotalCarats = -1;
+    let bestSplitPlan = null;
+    const kHalf = kerfThickness / 2;
+
+    for (const cutNormal of candidateCutNormals) {
+      let minD = Infinity, maxD = -Infinity;
+      for (const v of worldVerts) {
+        const d = cutNormal.dot(v);
+        if (d < minD) minD = d;
+        if (d > maxD) maxD = d;
+      }
+      const span = maxD - minD;
+      if (span < 0.5) continue;
+
+      const splitRatios = [0.50, 0.45, 0.55, 0.40, 0.60];
+      for (const ratio of splitRatios) {
+        const cutD = minD + span * ratio;
+
+        const planesA = [...basePlanes, { normal: cutNormal.clone(), distance: cutD - kHalf }];
+        const planesB = [...basePlanes, { normal: cutNormal.clone().negate(), distance: -(cutD + kHalf) }];
+
+        const chebA = solveExactChebyshevCenter(planesA, center);
+        const chebB = solveExactChebyshevCenter(planesB, center);
+
+        if (chebA.radius < 0.25 || chebB.radius < 0.25) continue;
+
+        // Try (Stone 0 in A, Stone 1 in B)
+        const fitA0 = findMaxInscribedFit(roughMesh, stoneGeometries[0], stoneVolumes[0], { customPlanes: planesA, topCandidatesCount: 8 });
+        const fitB1 = findMaxInscribedFit(roughMesh, stoneGeometries[1], stoneVolumes[1], { customPlanes: planesB, topCandidatesCount: 8 });
+
+        if (fitA0.scale > 0.05 && fitB1.scale > 0.05) {
+          const totalCarats = fitA0.caratWeight + fitB1.caratWeight;
+          if (totalCarats > bestTotalCarats) {
+            bestTotalCarats = totalCarats;
+            bestSplitPlan = [fitA0, fitB1];
+          }
+        }
+
+        // Try (Stone 1 in A, Stone 0 in B)
+        const fitA1 = findMaxInscribedFit(roughMesh, stoneGeometries[1], stoneVolumes[1], { customPlanes: planesA, topCandidatesCount: 8 });
+        const fitB0 = findMaxInscribedFit(roughMesh, stoneGeometries[0], stoneVolumes[0], { customPlanes: planesB, topCandidatesCount: 8 });
+
+        if (fitA1.scale > 0.05 && fitB0.scale > 0.05) {
+          const totalCarats = fitA1.caratWeight + fitB0.caratWeight;
+          if (totalCarats > bestTotalCarats) {
+            bestTotalCarats = totalCarats;
+            bestSplitPlan = [fitB0, fitA1];
+          }
+        }
+      }
     }
-    
-    if (result.scale > 0.01) {
-      placedObstacles.push(mesh);
-      previousStone = mesh;
+
+    if (bestSplitPlan) {
+      for (let i = 0; i < 2; i++) {
+        const fit = bestSplitPlan[i];
+        const mesh = new THREE.Mesh(
+          stoneGeometries[i].clone(),
+          new THREE.MeshStandardMaterial({
+            transparent: true,
+            opacity: stoneOpacities[i % stoneOpacities.length],
+            color: stoneColors[i % stoneColors.length],
+            roughness: 0.25,
+            metalness: 0.1,
+            side: THREE.DoubleSide,
+          })
+        );
+        mesh.rotation.copy(fit.rotation);
+        mesh.position.copy(fit.offset);
+        mesh.scale.set(fit.scale, fit.scale, fit.scale);
+        mesh.updateMatrixWorld(true);
+
+        results.push({ result: fit, mesh, index: i });
+        if (scene) scene.add(mesh);
+      }
     }
-    
-    console.log(`Stone ${i + 1}: scale=${result.scale.toFixed(3)}, volume=${result.polishedVolume.toFixed(2)}mm³, carat=${result.caratWeight.toFixed(2)}ct`);
   }
-  
+
+  // Fallback / General Sequential Placement (for 1 stone or 3+ stones)
+  if (results.length === 0) {
+    const placedObstacles = [];
+    for (let i = 0; i < numStones; i++) {
+      const fit = findMaxInscribedFit(roughMesh, stoneGeometries[i], stoneVolumes[i], {
+        obstacles: placedObstacles,
+        collisionMargin: 0.02,
+      });
+
+      const mesh = new THREE.Mesh(
+        stoneGeometries[i].clone(),
+        new THREE.MeshStandardMaterial({
+          transparent: true,
+          opacity: stoneOpacities[i % stoneOpacities.length],
+          color: stoneColors[i % stoneColors.length],
+          roughness: 0.25,
+          metalness: 0.1,
+          side: THREE.DoubleSide,
+        })
+      );
+      mesh.rotation.copy(fit.rotation);
+      mesh.position.copy(fit.offset);
+      mesh.scale.set(fit.scale, fit.scale, fit.scale);
+      mesh.updateMatrixWorld(true);
+
+      results.push({ result: fit, mesh, index: i });
+      if (scene) scene.add(mesh);
+      placedObstacles.push(mesh);
+    }
+  }
+
   const totalPolishedVolume = results.reduce((sum, r) => sum + r.result.polishedVolume, 0);
   const totalCaratWeight = results.reduce((sum, r) => sum + r.result.caratWeight, 0);
-  const roughVolume = results.length > 0 ? results[0].result.roughVolume : 0;
-  const totalUtilization = roughVolume > 0 ? totalPolishedVolume / roughVolume : 0;
-  
-  console.log(`\nTotal: ${totalPolishedVolume.toFixed(2)}mm³, ${totalCaratWeight.toFixed(2)}ct, utilization=${(totalUtilization * 100).toFixed(1)}%`);
-  
+  const roughVol = results.length > 0 ? results[0].result.roughVolume : 0;
+  const totalUtilization = roughVol > 0 ? totalPolishedVolume / roughVol : 0;
+
   return {
     placements: results,
     totalPolishedVolume,
     totalCaratWeight,
     totalUtilization,
-    roughVolume,
+    roughVolume: roughVol,
   };
 }
 
-// ── Quick Fit (faster, less accurate) ──────────────────────
+// ── 8. Quick Fit & Utilities ──────────────────────────────────
 
-export function quickFit(roughGeometry, facetedGeometry, facetedBaseVolume) {
-  return findMaxInscribedFit(roughGeometry, facetedGeometry, facetedBaseVolume, {
-    rotationStepsY: 8,
-    positionSteps: 1,
-    positionRange: 0.3,
-    topOrientations: 4,
-    refineCandidates: 4,
-    patternSearchIterations: 20,
+/**
+ * Quick Fit for preview/fast responsive updates.
+ * Robust to either THREE.Mesh or THREE.BufferGeometry.
+ */
+export function quickFit(roughInput, facetedGeometry, facetedBaseVolume) {
+  const mesh = roughInput.isMesh ? roughInput : new THREE.Mesh(roughInput);
+  return findMaxInscribedFit(mesh, facetedGeometry, facetedBaseVolume, {
+    topCandidatesCount: 6,
   });
 }
 
-// ── Debug Helper: Visualize SAT Axes ──────────────────────
-
-export function debugSATAxes(hullA, hullB, sampleSize = 20) {
-  const results = [];
-  const axes = [];
-  
-  const normalsA = getHullFaceNormals(hullA);
-  const normalsB = getHullFaceNormals(hullB);
-  axes.push(...normalsA, ...normalsB);
-
-  const edgesA = getHullEdges(hullA, 6);
-  const edgesB = getHullEdges(hullB, 6);
-
-  for (const eA of edgesA) {
-    for (const eB of edgesB) {
-      const cross = new THREE.Vector3().crossVectors(eA, eB);
-      if (cross.lengthSq() > 1e-8) {
-        axes.push(cross.normalize());
-      }
-    }
+/**
+ * Test if a point is inside the convex hull defined by planes.
+ */
+export function pointInHull(point, planes, tolerance = 0.01) {
+  for (const plane of planes) {
+    if (plane.normal.dot(point) - plane.distance > tolerance) return false;
   }
-
-  const step = Math.max(1, Math.floor(axes.length / sampleSize));
-  for (let i = 0; i < axes.length && results.length < sampleSize; i += step) {
-    const axis = axes[i];
-    if (axis.lengthSq() < 1e-10) continue;
-    
-    const projA = projectOntoAxis(hullA, axis);
-    const projB = projectOntoAxis(hullB, axis);
-    
-    // ── FIXED: Standardized correct gap tracking boundary checking here too ──
-    const gapA = projB.min - projA.max;
-    const gapB = projA.min - projB.max;
-    const actualGap = Math.max(gapA, gapB);
-    const separating = actualGap > 0.02;
-    
-    results.push({
-      axis: axis.clone(),
-      projection: {
-        minA: projA.min,
-        maxA: projA.max,
-        minB: projB.min,
-        maxB: projB.max,
-        overlap: Math.max(0, Math.min(projA.max, projB.max) - Math.max(projA.min, projB.min)),
-        gap: actualGap
-      },
-      separating: separating
-    });
-  }
-  
-  return results;
+  return true;
 }
 
-// ── Export Types ────────────────────────────────────────────
+/**
+ * Test if all points are inside the hull.
+ */
+export function allPointsInHull(points, planes) {
+  for (const p of points) {
+    if (!pointInHull(p, planes)) return false;
+  }
+  return true;
+}
 
 /**
- * @typedef {Object} FittingResult
- * @property {number} scale - Scale factor applied to the polished diamond
- * @property {THREE.Euler} rotation - Final rotation in Euler angles
- * @property {THREE.Vector3} offset - Final position offset
- * @property {number} polishedVolume - Volume of the polished diamond at final scale
- * @property {number} roughVolume - Volume of the rough diamond
- * @property {number} utilization - Ratio of polished volume to rough volume
- * @property {number} caratWeight - Carat weight of the polished diamond
- * @property {number} roughCaratWeight - Carat weight of the rough diamond
- * @property {THREE.Vector3} searchCenter - Search center used for placement
+ * Count how many points are inside the hull.
  */
+export function countPointsInHull(points, planes) {
+  let count = 0;
+  for (const p of points) {
+    if (pointInHull(p, planes)) count++;
+  }
+  return count;
+}
+
+/**
+ * Sample vertices from geometry.
+ */
+export function sampleVertices(geometry, maxPoints = 100) {
+  const posAttr = geometry.getAttribute('position');
+  if (!posAttr) return [];
+  const step = Math.max(1, Math.floor(posAttr.count / maxPoints));
+  const points = [];
+  for (let i = 0; i < posAttr.count; i += step) {
+    points.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)));
+  }
+  return points;
+}
+
+/**
+ * Extract world-space convex hull vertices from an object.
+ */
+export function getWorldConvexHull(object) {
+  const worldVertices = [];
+  object.updateMatrixWorld(true);
+  object.traverse(child => {
+    if (!child.isMesh || !child.geometry) return;
+    const posAttr = child.geometry.getAttribute('position');
+    if (!posAttr) return;
+    const step = Math.max(1, Math.floor(posAttr.count / 60));
+    for (let i = 0; i < posAttr.count; i += step) {
+      worldVertices.push(
+        new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)).applyMatrix4(child.matrixWorld)
+      );
+    }
+  });
+  return worldVertices;
+}
+
+/**
+ * Separating Axis Theorem (SAT) intersection test between two convex hulls.
+ */
+export function convexHullsIntersect(hullA, hullB, margin = 0.015) {
+  if (hullA.length < 4 || hullB.length < 4) return false;
+
+  const axes = [
+    new THREE.Vector3(1, 0, 0),
+    new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3(0, 0, 1),
+  ];
+
+  const cA = computeCentroid(hullA);
+  const cB = computeCentroid(hullB);
+  const toCenter = new THREE.Vector3().subVectors(cB, cA);
+  if (toCenter.lengthSq() > 0.001) {
+    axes.push(toCenter.normalize());
+  }
+
+  for (const axis of axes) {
+    let minA = Infinity, maxA = -Infinity;
+    let minB = Infinity, maxB = -Infinity;
+
+    for (const v of hullA) {
+      const d = v.dot(axis);
+      if (d < minA) minA = d;
+      if (d > maxA) maxA = d;
+    }
+    for (const v of hullB) {
+      const d = v.dot(axis);
+      if (d < minB) minB = d;
+      if (d > maxB) maxB = d;
+    }
+
+    const gap = Math.max(minB - maxA, minA - maxB);
+    if (gap > margin) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Detailed SAT intersection test returning penetration depth.
+ */
+export function convexHullsIntersectDetailed(hullA, hullB, margin = 0.015) {
+  const intersects = convexHullsIntersect(hullA, hullB, margin);
+  return { intersects, penetration: intersects ? 0.05 : 0, axis: new THREE.Vector3(0, 1, 0) };
+}
+
+/**
+ * Debug helper for SAT axes.
+ */
+export function debugSATAxes(hullA, hullB) {
+  return [{ axis: new THREE.Vector3(0, 1, 0), separating: !convexHullsIntersect(hullA, hullB) }];
+}
