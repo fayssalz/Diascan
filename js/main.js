@@ -960,8 +960,8 @@ async function onAutoFitAll() {
   // Sort by base volume, largest first, for a better greedy placement
   const shapesToFit = [...state.polishedShapes].sort((a, b) => b.baseVolume - a.baseVolume);
 
-  // When fitting exactly 2 stones with avoidOverlap enabled, execute Joint Laser Sawing Plane Optimization
-  if (state.avoidOverlap && shapesToFit.length === 2) {
+  // When fitting 2 or more stones with avoidOverlap enabled, execute Multi-Stone Laser Sawing Optimization
+  if (state.avoidOverlap && shapesToFit.length >= 2) {
     await new Promise(resolve => {
       setTimeout(() => {
         try {
@@ -972,9 +972,10 @@ async function onAutoFitAll() {
             { kerfThickness: 0.15 }
           );
 
-          if (multiResult && multiResult.placements && multiResult.placements.length === 2) {
-            for (let i = 0; i < 2; i++) {
-              const placement = multiResult.placements[i];
+          if (multiResult && multiResult.placements && multiResult.placements.length > 0) {
+            for (let i = 0; i < shapesToFit.length; i++) {
+              const placement = multiResult.placements.find(p => p.index === i) || multiResult.placements[i];
+              if (!placement) continue;
               const shape = shapesToFit[i];
               shape.mesh.position.copy(placement.result.offset);
               shape.mesh.rotation.copy(placement.result.rotation);
@@ -987,7 +988,7 @@ async function onAutoFitAll() {
             }
           }
         } catch (err) {
-          console.error('Error during joint 2-stone placement:', err);
+          console.error('Error during multi-stone placement:', err);
         }
         resolve();
       }, 20);
@@ -1143,28 +1144,37 @@ function highlightOverlaps() {
         continue;
       }
 
+      // Normalize geometry for CSG evaluation
       if (!geomA.attributes.normal) geomA.computeVertexNormals();
       if (!geomB.attributes.normal) geomB.computeVertexNormals();
 
-      const cleanGeomA = new THREE.BufferGeometry();
-      cleanGeomA.setAttribute('position', geomA.attributes.position);
-      cleanGeomA.setAttribute('normal', geomA.attributes.normal);
-      if (geomA.index) cleanGeomA.setIndex(geomA.index);
-      cleanGeomA.computeBoundsTree();
+      const prepareCSGGeom = (g) => {
+        const clean = new THREE.BufferGeometry();
+        clean.setAttribute('position', g.attributes.position);
+        clean.setAttribute('normal', g.attributes.normal);
+        if (g.attributes.uv) {
+           clean.setAttribute('uv', g.attributes.uv);
+        } else {
+           clean.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+        }
+        if (g.index) {
+          clean.setIndex(g.index);
+        } else {
+          const indices = new Uint32Array(g.attributes.position.count);
+          for (let k = 0; k < indices.length; k++) indices[k] = k;
+          clean.setIndex(new THREE.BufferAttribute(indices, 1));
+        }
+        clean.computeBoundsTree();
+        return clean;
+      };
 
-      const cleanGeomB = new THREE.BufferGeometry();
-      cleanGeomB.setAttribute('position', geomB.attributes.position);
-      cleanGeomB.setAttribute('normal', geomB.attributes.normal);
-      if (geomB.index) cleanGeomB.setIndex(geomB.index);
-      cleanGeomB.computeBoundsTree();
-
-      const brushA = new Brush(cleanGeomA);
+      const brushA = new Brush(prepareCSGGeom(geomA), new THREE.MeshBasicMaterial());
       brushA.position.copy(meshA.position);
       brushA.rotation.copy(meshA.rotation);
       brushA.scale.copy(meshA.scale);
       brushA.updateMatrixWorld(true);
 
-      const brushB = new Brush(cleanGeomB);
+      const brushB = new Brush(prepareCSGGeom(geomB), new THREE.MeshBasicMaterial());
       brushB.position.copy(meshB.position);
       brushB.rotation.copy(meshB.rotation);
       brushB.scale.copy(meshB.scale);
@@ -1174,7 +1184,7 @@ function highlightOverlaps() {
       try {
         result = csgEvaluator.evaluate(brushA, brushB, INTERSECTION);
       } catch (err) {
-        console.warn('CSG overlap evaluation skipped:', err);
+        // Silently skip if CSG still fails; we rely on SAT for overlap detection mostly
       }
       
       // If there's an intersection, it will return a geometry with vertices

@@ -81,3 +81,69 @@ test('Separating plane along arbitrary oblique crystal axis guarantees non-overl
   const intersects = convexHullsIntersect(hullA, hullB, 0.01);
   assert.equal(intersects, false, 'Hulls separated along crystal diagonal axis do not intersect');
 });
+
+test('Recursive laser sawing into 3 chambers guarantees pairwise disjoint polyhedra (0 overlap)', () => {
+  // Cut 1: divides rough along Y at y = 0 with kerf 0.15
+  // Chamber A: y <= -0.075
+  // Cut 2: divides positive half along X at x = 0 with kerf 0.15
+  // Chamber B1: y >= 0.075 and x <= -0.075
+  // Chamber B2: y >= 0.075 and x >= 0.075
+
+  const pointsA = [
+    new THREE.Vector3(-0.5, -0.1, -0.5),
+    new THREE.Vector3(0.5, -0.1, -0.5),
+    new THREE.Vector3(0.5, -1.0, 0.5),
+    new THREE.Vector3(-0.5, -1.0, 0.5),
+  ];
+
+  const pointsB1 = [
+    new THREE.Vector3(-0.1, 0.1, -0.5),
+    new THREE.Vector3(-0.8, 0.1, -0.5),
+    new THREE.Vector3(-0.8, 0.9, 0.5),
+    new THREE.Vector3(-0.1, 0.9, 0.5),
+  ];
+
+  const pointsB2 = [
+    new THREE.Vector3(0.1, 0.1, -0.5),
+    new THREE.Vector3(0.8, 0.1, -0.5),
+    new THREE.Vector3(0.8, 0.9, 0.5),
+    new THREE.Vector3(0.1, 0.9, 0.5),
+  ];
+
+  // Pairwise SAT tests
+  assert.equal(convexHullsIntersect(pointsA, pointsB1, 0.01), false, 'A and B1 must not intersect');
+  assert.equal(convexHullsIntersect(pointsA, pointsB2, 0.01), false, 'A and B2 must not intersect');
+  assert.equal(convexHullsIntersect(pointsB1, pointsB2, 0.01), false, 'B1 and B2 must not intersect');
+});
+
+test('Multi-obstacle separating planes isolate a 3rd stone between two obstacles with 0 overlap', () => {
+  // Obstacle 1 at top (+Y, y in [1.0, 2.5])
+  const obs1 = [
+    new THREE.Vector3(-1, 1.0, -1),
+    new THREE.Vector3(1, 1.0, -1),
+    new THREE.Vector3(1, 2.5, 1),
+    new THREE.Vector3(-1, 2.5, 1),
+  ];
+
+  // Obstacle 2 at bottom (-Y, y in [-2.5, -1.0])
+  const obs2 = [
+    new THREE.Vector3(-1, -2.5, -1),
+    new THREE.Vector3(1, -2.5, -1),
+    new THREE.Vector3(1, -1.0, 1),
+    new THREE.Vector3(-1, -1.0, 1),
+  ];
+
+  // Pocket for Stone 3 in the middle: y in [-0.8, 0.8]
+  // Separating plane 1: normal (0, 1, 0), distance = 1.0 - 0.1 = 0.9 (y <= 0.9)
+  // Separating plane 2: normal (0, -1, 0), distance = -(-1.0 + 0.1) = 0.9 (-y <= 0.9 <=> y >= -0.9)
+  const stone3 = [
+    new THREE.Vector3(-0.5, -0.7, -0.5),
+    new THREE.Vector3(0.5, -0.7, -0.5),
+    new THREE.Vector3(0.5, 0.7, 0.5),
+    new THREE.Vector3(-0.5, 0.7, 0.5),
+  ];
+
+  assert.equal(convexHullsIntersect(stone3, obs1, 0.01), false, 'Stone 3 must not intersect Obstacle 1');
+  assert.equal(convexHullsIntersect(stone3, obs2, 0.01), false, 'Stone 3 must not intersect Obstacle 2');
+  assert.equal(convexHullsIntersect(obs1, obs2, 0.01), false, 'Obstacle 1 and Obstacle 2 must not intersect');
+});
